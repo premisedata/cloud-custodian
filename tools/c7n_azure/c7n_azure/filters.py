@@ -821,13 +821,11 @@ class CostFilter(ValueFilter):
 
         - ``WeekToDate``
         - ``MonthToDate``
-        - ``YearToDate``
 
       - All days in the previous calendar period:
 
-        - ``TheLastWeek``
         - ``TheLastMonth``
-        - ``TheLastYear``
+        - ``TheLastBillingMonth``
 
     :examples:
 
@@ -925,7 +923,7 @@ class CostFilter(ValueFilter):
 
         client = manager.get_client('azure.mgmt.costmanagement.CostManagementClient')
 
-        aggregation = {'totalCost': QueryAggregation(name='PreTaxCost')}
+        aggregation = {'totalCost': QueryAggregation(name='PreTaxCost', function='Sum')}
 
         grouping = [QueryGrouping(type='Dimension',
                                   name='ResourceGroupName' if is_resource_group else 'ResourceId')]
@@ -950,22 +948,21 @@ class CostFilter(ValueFilter):
             timeframe = 'Custom'
             time_period = QueryTimePeriod(from_property=start_time, to=end_time)
 
-        definition = QueryDefinition(timeframe=timeframe, time_period=time_period, dataset=dataset)
+        definition = QueryDefinition(type='ActualCost', timeframe=timeframe, time_period=time_period, dataset=dataset)
 
         subscription_id = manager.get_session().get_subscription_id()
 
         scope = '/subscriptions/' + subscription_id
 
-        query = client.query.usage_by_scope(scope, definition)
+        query = client.query.usage(scope, definition)
 
         if hasattr(query, '_derserializer'):
             original = query._derserializer._deserialize
             query._derserializer._deserialize = lambda target, data: \
                 original(target, self.fix_wrap_rest_response(data))
 
-        result_list = list(query)[0]
-        result_list = [{result_list.columns[i].name: v for i, v in enumerate(row)}
-                       for row in result_list.rows]
+        result_list = [{query.columns[i].name: v for i, v in enumerate(row)}
+                       for row in query.rows]
 
         for r in result_list:
             if 'ResourceGroupName' in r:
