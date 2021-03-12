@@ -1,26 +1,14 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import time
 
 import requests
-import six
 from c7n_mailer.ldap_lookup import Redis
 from c7n_mailer.utils import get_rendered_jinja
 from c7n_mailer.utils_email import is_email
 
 
-class SlackDelivery(object):
+class SlackDelivery:
 
     def __init__(self, config, logger, email_handler):
         self.caching = self.cache_factory(config, config.get('cache_engine', None))
@@ -47,7 +35,7 @@ class SlackDelivery(object):
             if target == 'slack://owners':
                 to_addrs_to_resources_map = \
                     self.email_handler.get_email_to_addrs_to_resources_map(sqs_message)
-                for to_addrs, resources in six.iteritems(to_addrs_to_resources_map):
+                for to_addrs, resources in to_addrs_to_resources_map.items():
 
                     resolved_addrs = self.retrieve_user_im(list(to_addrs))
 
@@ -90,10 +78,20 @@ class SlackDelivery(object):
                     resource_list,
                     self.logger, 'slack_template', 'slack_default',
                     self.config['templates_folders'])
-            elif target.startswith('slack://tag/') and 'tags' in resource:
+            elif target.startswith('slack://tag/') and 'Tags' in resource:
                 tag_name = target.split('tag/', 1)[1]
-                result = resource.get('tags', {}).get(tag_name, None)
-                resolved_addrs = result
+                result = next((item for item in resource.get('Tags', [])
+                               if item["Key"] == tag_name), None)
+                if not result:
+                    self.logger.debug(
+                        "No %s tag found in resource." % tag_name)
+                    continue
+
+                resolved_addrs = result['Value']
+
+                if not resolved_addrs.startswith("#"):
+                    resolved_addrs = "#" + resolved_addrs
+
                 slack_messages[resolved_addrs] = get_rendered_jinja(
                     resolved_addrs, sqs_message,
                     resource_list,
@@ -143,7 +141,7 @@ class SlackDelivery(object):
                 elif response["error"] == "invalid_auth":
                     raise Exception("Invalid Slack token.")
                 elif response["error"] == "users_not_found":
-                    self.logger.info("Slack user ID not found.")
+                    self.logger.info("Slack user ID for email address %s not found.", address)
                     if self.caching:
                         self.caching.set(address, {})
                     continue
@@ -180,11 +178,25 @@ class SlackDelivery(object):
         if response.status_code == 429 and "Retry-After" in response.headers:
             self.logger.info(
                 "Slack API rate limiting. Waiting %d seconds",
-                int(response.headers['retry-after']))
+                int(response.headers['Retry-After']))
             time.sleep(int(response.headers['Retry-After']))
             return
-        elif response.status_code != 200:  # pragma: no cover
+
+        elif response.status_code != 200:
             self.logger.info(
                 "Error in sending Slack message status:%s response: %s",
-                response.status_code, response.text())
+                response.status_code, response.text)
             return
+
+        if 'text/html' in response.headers['content-type']:
+            if response.text != 'ok':
+                self.logger.info("Error in sending Slack message. Status:%s, response:%s",
+                                response.status_code, response.text)
+                return
+
+        else:
+            response_json = response.json()
+            if not response_json['ok']:
+                self.logger.info("Error in sending Slack message. Status:%s, response:%s",
+                                response.status_code, response_json['error'])
+                return

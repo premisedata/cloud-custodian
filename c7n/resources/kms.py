@@ -1,80 +1,100 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 from botocore.exceptions import ClientError
 
 import json
-import logging
 
 from c7n.actions import RemovePolicyBase, BaseAction
 from c7n.filters import Filter, CrossAccountAccessFilter, ValueFilter
 from c7n.manager import resources
-from c7n.query import QueryResourceManager, RetryPageIterator
-from c7n.utils import local_session, type_schema
+from c7n.query import (
+    ConfigSource, DescribeSource, QueryResourceManager, RetryPageIterator, TypeInfo)
+from c7n.utils import local_session, type_schema, select_keys
 from c7n.tags import universal_augment
 
-log = logging.getLogger('custodian.kms')
+from .securityhub import PostFinding
 
 
 @resources.register('kms')
 class KeyAlias(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'kms'
-        type = 'key-alias'
+        arn_type = 'alias'
         enum_spec = ('list_aliases', 'Aliases', None)
         name = "AliasName"
         id = "AliasArn"
-        dimension = None
-        filter_name = None
+        cfn_type = 'AWS::KMS::Alias'
 
     def augment(self, resources):
         return [r for r in resources if 'TargetKeyId' in r]
 
 
-@resources.register('kms-key')
-class Key(QueryResourceManager):
+class DescribeKey(DescribeSource):
 
-    class resource_type(object):
-        service = 'kms'
-        type = "key"
-        enum_spec = ('list_keys', 'Keys', None)
-        name = "KeyId"
-        id = "KeyArn"
-        dimension = None
-        filter_name = None
-        universal_taggable = True
+    FetchThreshold = 10  # ie should we describe all keys or just fetch them directly
+
+    def get_resources(self, ids, cache=True):
+        # this forms a threshold beyond which we'll fetch individual keys of interest.
+        # else we'll need to fetch through the full set and client side filter.
+        if len(ids) < self.FetchThreshold:
+            client = local_session(self.manager.session_factory).client('kms')
+            results = []
+            for rid in ids:
+                try:
+                    results.append(
+                        self.manager.retry(
+                            client.describe_key,
+                            KeyId=rid)['KeyMetadata'])
+                except client.exceptions.NotFoundException:
+                    continue
+            return results
+        return super().get_resources(ids, cache)
 
     def augment(self, resources):
-        client = local_session(self.session_factory).client('kms')
+        aliases = KeyAlias(self.manager.ctx, {}).resources()
+        alias_map = {}
+        for a in aliases:
+            key_id = a['TargetKeyId']
+            alias_map[key_id] = alias_map.get(key_id, []) + [a['AliasName']]
 
+        client = local_session(self.manager.session_factory).client('kms')
         for r in resources:
             try:
-                key_id = r.get('KeyArn')
-                info = client.describe_key(KeyId=key_id)['KeyMetadata']
+                key_id = r.get('KeyId')
+                key_arn = r.get('KeyArn', key_id)
+                info = client.describe_key(KeyId=key_arn)['KeyMetadata']
+                if key_id in alias_map:
+                    info['AliasNames'] = alias_map[key_id]
                 r.update(info)
-
             except ClientError as e:
                 if e.response['Error']['Code'] == 'AccessDeniedException':
-                    self.log.warning(
+                    self.manager.log.warning(
                         "Access denied when describing key:%s",
                         key_id)
                 else:
                     raise
 
-        return universal_augment(self, resources)
+        return universal_augment(self.manager, resources)
+
+
+@resources.register('kms-key')
+class Key(QueryResourceManager):
+
+    class resource_type(TypeInfo):
+        service = 'kms'
+        arn_type = "key"
+        enum_spec = ('list_keys', 'Keys', None)
+        detail_spec = ('describe_key', 'KeyId', 'Arn', 'KeyMetadata')  # overriden
+        name = id = "KeyId"
+        arn = 'Arn'
+        universal_taggable = True
+        cfn_type = config_type = 'AWS::KMS::Key'
+
+    source_mapping = {
+        'config': ConfigSource,
+        'describe': DescribeKey
+    }
 
 
 @Key.filter_registry.register('key-rotation-status')
@@ -95,6 +115,7 @@ class KeyRotationStatus(ValueFilter):
     """
 
     schema = type_schema('key-rotation-status', rinherit=ValueFilter.schema)
+    schema_alias = False
     permissions = ('kms:GetKeyRotationStatus',)
 
     def process(self, resources, event=None):
@@ -133,7 +154,7 @@ class KMSCrossAccountAccessFilter(CrossAccountAccessFilter):
     .. code-block:: yaml
 
             policies:
-              - name: kms-key-cross-account
+              - name: check-kms-key-cross-account
                 resource: kms-key
                 filters:
                   - type: cross-account
@@ -210,12 +231,12 @@ class GrantCount(Filter):
 class ResourceKmsKeyAlias(ValueFilter):
 
     schema = type_schema('kms-alias', rinherit=ValueFilter.schema)
+    schema_alias = False
 
     def get_permissions(self):
         return KeyAlias(self.manager.ctx, {}).get_permissions()
 
     def get_matching_aliases(self, resources, event=None):
-
         key_aliases = KeyAlias(self.manager.ctx, {}).resources()
         key_aliases_dict = {a['TargetKeyId']: a for a in key_aliases}
 
@@ -302,9 +323,9 @@ class KmsKeyRotation(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
-        policy:
+        policies:
           - name: enable-cmk-rotation
             resource: kms-key
             filters:
@@ -325,3 +346,25 @@ class KmsKeyRotation(BaseAction):
                 client.enable_key_rotation(KeyId=k['KeyId'])
                 continue
             client.disable_key_rotation(KeyId=k['KeyId'])
+
+
+@KeyAlias.action_registry.register('post-finding')
+@Key.action_registry.register('post-finding')
+class KmsPostFinding(PostFinding):
+
+    resource_type = 'AwsKmsKey'
+
+    def format_resource(self, r):
+        if 'TargetKeyId' in r:
+            resolved = self.manager.get_resource_manager(
+                'kms-key').get_resources([r['TargetKeyId']])
+            if not resolved:
+                return
+            r = resolved[0]
+            r[self.manager.resource_type.id] = r['KeyId']
+        envelope, payload = self.format_envelope(r)
+        payload.update(self.filter_empty(
+            select_keys(r, [
+                'AWSAccount', 'CreationDate', 'KeyId',
+                'KeyManager', 'Origin', 'KeyState'])))
+        return envelope

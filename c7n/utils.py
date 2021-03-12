@@ -1,82 +1,46 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import copy
-import csv
 from datetime import datetime, timedelta
-import functools
+from dateutil.tz import tzutc
 import json
 import itertools
+import ipaddress
 import logging
 import os
 import random
 import re
+import sys
 import threading
 import time
-import six
-import sys
+from urllib import parse as urlparse
+from urllib.request import getproxies
 
-from six.moves.urllib import parse as urlparse
 
+from dateutil.parser import ParserError, parse
+
+from c7n import config
 from c7n.exceptions import ClientError, PolicyValidationError
-from c7n import ipaddress, config
 
-# Try to place nice in lambda exec environment
-# where we don't require yaml
-
-BaseSafeDumper = None
+# Try to play nice in a serverless environment, where we don't require yaml
 
 try:
     import yaml
 except ImportError:  # pragma: no cover
-    yaml = None
+    SafeLoader = BaseSafeDumper = yaml = None
 else:
     try:
         from yaml import CSafeLoader as SafeLoader, CSafeDumper as BaseSafeDumper
     except ImportError:  # pragma: no cover
-        try:
-            from yaml import SafeLoader, SafeDumper as BaseSafeDumper
-        except ImportError:
-            SafeLoader = None
-            BaseSafeDumper = None
+        from yaml import SafeLoader, SafeDumper as BaseSafeDumper
 
-if BaseSafeDumper:
-    class SafeDumper(BaseSafeDumper):
-        def ignore_aliases(self, data):
-            return True
-else:
-    SafeDumper = None
+
+class SafeDumper(BaseSafeDumper or object):
+    def ignore_aliases(self, data):
+        return True
+
 
 log = logging.getLogger('custodian.utils')
-
-
-class UnicodeWriter:
-    """utf8 encoding csv writer."""
-
-    def __init__(self, f, dialect=csv.excel, **kwds):
-        self.writer = csv.writer(f, dialect=dialect, **kwds)
-        if sys.version_info.major == 3:
-            self.writerows = self.writer.writerows
-            self.writerow = self.writer.writerow
-
-    def writerow(self, row):
-        self.writer.writerow([s.encode("utf-8") for s in row])
-
-    def writerows(self, rows):
-        for row in rows:
-            self.writerow(row)
 
 
 class VarsSubstitutionError(Exception):
@@ -143,6 +107,56 @@ def filter_empty(d):
     return d
 
 
+# We need a minimum floor when examining possible timestamp
+# values to distinguish from other numeric time usages. Use
+# the S3 Launch Date.
+DATE_FLOOR = time.mktime((2006, 3, 19, 0, 0, 0, 0, 0, 0))
+
+
+def parse_date(v, tz=None):
+    """Handle various permutations of a datetime serialization
+    to a datetime with the given timezone.
+
+    Handles strings, seconds since epoch, and milliseconds since epoch.
+    """
+
+    if v is None:
+        return v
+
+    tz = tz or tzutc()
+
+    if isinstance(v, datetime):
+        if v.tzinfo is None:
+            return v.astimezone(tz)
+        return v
+
+    if isinstance(v, str) and not v.isdigit():
+        try:
+            return parse(v).astimezone(tz)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            pass
+
+    # OSError on windows -- https://bugs.python.org/issue36439
+    exceptions = (ValueError, OSError) if os.name == "nt" else (ValueError)
+
+    if isinstance(v, (int, float, str)):
+        try:
+            if float(v) > DATE_FLOOR:
+                v = datetime.fromtimestamp(float(v)).astimezone(tz)
+        except exceptions:
+            pass
+
+    if isinstance(v, (int, float, str)):
+        # try interpreting as milliseconds epoch
+        try:
+            if float(v) > DATE_FLOOR:
+                v = datetime.fromtimestamp(float(v) / 1000).astimezone(tz)
+        except exceptions:
+            pass
+
+    return isinstance(v, datetime) and v or None
+
+
 def type_schema(
         type_name, inherits=None, rinherit=None,
         aliases=None, required=None, **props):
@@ -178,6 +192,10 @@ def type_schema(
         s['additionalProperties'] = False
 
     s['properties'].update(props)
+
+    for k, v in props.items():
+        if v is None:
+            del s['properties'][k]
     if not required:
         required = []
     if isinstance(required, list):
@@ -227,20 +245,44 @@ def chunks(iterable, size=50):
         yield batch
 
 
-def camelResource(obj):
+def camelResource(obj, implicitDate=False, implicitTitle=True):
     """Some sources from apis return lowerCased where as describe calls
 
     always return TitleCase, this function turns the former to the later
+
+    implicitDate ~ automatically sniff keys that look like isoformat date strings
+     and convert to python datetime objects.
     """
     if not isinstance(obj, dict):
         return obj
     for k in list(obj.keys()):
         v = obj.pop(k)
-        obj["%s%s" % (k[0].upper(), k[1:])] = v
+        if implicitTitle:
+            ok = "%s%s" % (k[0].upper(), k[1:])
+        else:
+            ok = k
+        obj[ok] = v
+
+        if implicitDate:
+            # config service handles datetime differently then describe sdks
+            # the sdks use knowledge of the shape to support language native
+            # date times, while config just turns everything into a serialized
+            # json with mangled keys without type info. to normalize to describe
+            # we implicitly sniff keys which look like datetimes, and have an
+            # isoformat marker ('T').
+            kn = k.lower()
+            if isinstance(v, (str, int)) and ('time' in kn or 'date' in kn):
+                try:
+                    dv = parse_date(v)
+                except ParserError:
+                    dv = None
+                if dv:
+                    obj[ok] = dv
         if isinstance(v, dict):
-            camelResource(v)
+            camelResource(v, implicitDate, implicitTitle)
         elif isinstance(v, list):
-            list(map(camelResource, v))
+            for e in v:
+                camelResource(e, implicitDate, implicitTitle)
     return obj
 
 
@@ -334,8 +376,14 @@ REGION_PARTITION_MAP = {
     'us-gov-east-1': 'aws-us-gov',
     'us-gov-west-1': 'aws-us-gov',
     'cn-north-1': 'aws-cn',
-    'cn-northwest-1': 'aws-cn'
+    'cn-northwest-1': 'aws-cn',
+    'us-isob-east-1': 'aws-iso-b',
+    'us-iso-east-1': 'aws-iso'
 }
+
+
+def get_partition(region):
+    return REGION_PARTITION_MAP.get(region, 'aws')
 
 
 def generate_arn(
@@ -351,6 +399,8 @@ def generate_arn(
     arn = 'arn:%s:%s:%s:%s:' % (
         partition, service, region if region else '', account_id if account_id else '')
     if resource_type:
+        if resource.startswith(separator):
+            separator = ''
         arn = arn + '%s%s%s' % (resource_type, separator, resource)
     else:
         arn = arn + resource
@@ -364,7 +414,10 @@ def snapshot_identifier(prefix, db_identifier):
     return '%s-%s-%s' % (prefix, db_identifier, now.strftime('%Y-%m-%d-%H-%M'))
 
 
-def get_retry(codes=(), max_attempts=8, min_delay=1, log_retries=False):
+retry_log = logging.getLogger('c7n.retry')
+
+
+def get_retry(retry_codes=(), max_attempts=8, min_delay=1, log_retries=False):
     """Decorator for retry boto3 api call on transient errors.
 
     https://www.awsarchitectureblog.com/2015/03/backoff.html
@@ -384,18 +437,20 @@ def get_retry(codes=(), max_attempts=8, min_delay=1, log_retries=False):
     """
     max_delay = max(min_delay, 2) ** max_attempts
 
-    def _retry(func, *args, **kw):
+    def _retry(func, *args, ignore_err_codes=(), **kw):
         for idx, delay in enumerate(
                 backoff_delays(min_delay, max_delay, jitter=True)):
             try:
                 return func(*args, **kw)
             except ClientError as e:
-                if e.response['Error']['Code'] not in codes:
+                if e.response['Error']['Code'] in ignore_err_codes:
+                    return
+                elif e.response['Error']['Code'] not in retry_codes:
                     raise
                 elif idx == max_attempts - 1:
                     raise
                 if log_retries:
-                    worker_log.log(
+                    retry_log.log(
                         log_retries,
                         "retrying %s on error:%s attempt:%d last delay:%0.2f",
                         func, e.response['Error']['Code'], idx, delay)
@@ -421,7 +476,7 @@ def parse_cidr(value):
     if '/' not in value:
         klass = ipaddress.ip_address
     try:
-        v = klass(six.text_type(value))
+        v = klass(str(value))
     except (ipaddress.AddressValueError, ValueError):
         v = None
     return v
@@ -437,29 +492,22 @@ class IPv4Network(ipaddress.IPv4Network):
             return self.supernet_of(other)
         return super(IPv4Network, self).__contains__(other)
 
+    if (sys.version_info.major == 3 and sys.version_info.minor <= 6):  # pragma: no cover
+        @staticmethod
+        def _is_subnet_of(a, b):
+            try:
+                # Always false if one is v4 and the other is v6.
+                if a._version != b._version:
+                    raise TypeError(f"{a} and {b} are not of the same version")
+                return (b.network_address <= a.network_address and
+                        b.broadcast_address >= a.broadcast_address)
+            except AttributeError:
+                raise TypeError(f"Unable to test subnet containment "
+                                f"between {a} and {b}")
 
-worker_log = logging.getLogger('c7n.worker')
-
-
-def worker(f):
-    """Generic wrapper to log uncaught exceptions in a function.
-
-    When we cross concurrent.futures executor boundaries we lose our
-    traceback information, and when doing bulk operations we may tolerate
-    transient failures on a partial subset. However we still want to have
-    full accounting of the error in the logs, in a format that our error
-    collection (cwl subscription) can still pickup.
-    """
-    def _f(*args, **kw):
-        try:
-            return f(*args, **kw)
-        except Exception:
-            worker_log.exception(
-                'Error invoking %s',
-                "%s.%s" % (f.__module__, f.__name__))
-            raise
-    functools.update_wrapper(_f, f)
-    return _f
+        def supernet_of(self, other):
+            """Return True if this network is a supernet of other."""
+            return self._is_subnet_of(other, self)
 
 
 def reformat_schema(model):
@@ -529,7 +577,7 @@ def format_string_values(obj, err_fallback=(IndexError, KeyError), *args, **kwar
         for item in obj:
             new.append(format_string_values(item, *args, **kwargs))
         return new
-    elif isinstance(obj, six.string_types):
+    elif isinstance(obj, str):
         try:
             return obj.format(*args, **kwargs)
         except err_fallback:
@@ -551,13 +599,35 @@ def parse_url_config(url):
     return conf
 
 
-class FormatDate(object):
+def get_proxy_url(url):
+    proxies = getproxies()
+    url_parts = parse_url_config(url)
+
+    proxy_keys = [
+        url_parts['scheme'] + '://' + url_parts['netloc'],
+        url_parts['scheme'],
+        'all://' + url_parts['netloc'],
+        'all'
+    ]
+
+    for key in proxy_keys:
+        if key in proxies:
+            return proxies[key]
+
+    return None
+
+
+class FormatDate:
     """a datetime wrapper with extended pyformat syntax"""
 
     date_increment = re.compile(r'\+[0-9]+[Mdh]')
 
     def __init__(self, d=None):
         self._d = d
+
+    @property
+    def datetime(self):
+        return self._d
 
     @classmethod
     def utcnow(cls):
@@ -583,7 +653,7 @@ class FormatDate(object):
         return d.__format__(fmt)
 
 
-class QueryParser(object):
+class QueryParser:
 
     QuerySchema = {}
     type_name = ''
@@ -612,8 +682,8 @@ class QueryParser(object):
 
             if not cls.multi_value and isinstance(values, list):
                 raise PolicyValidationError(
-                    "%s QUery Filter Invalid Key: Value:%s Must be single valued" % (
-                        cls.type_name, key, values))
+                    "%s Query Filter Invalid Key: Value:%s Must be single valued" % (
+                        cls.type_name, key))
             elif not cls.multi_value:
                 values = [values]
 
@@ -624,7 +694,7 @@ class QueryParser(object):
 
             vtype = cls.QuerySchema.get(key)
             if vtype is None and key.startswith('tag'):
-                vtype = six.string_types
+                vtype = str
 
             if not isinstance(values, list):
                 raise PolicyValidationError(
@@ -632,7 +702,7 @@ class QueryParser(object):
                         cls.type_name, data,))
 
             for v in values:
-                if isinstance(vtype, tuple) and vtype != six.string_types:
+                if isinstance(vtype, tuple):
                     if v not in vtype:
                         raise PolicyValidationError(
                             "%s Query Filter Invalid Value: %s Valid: %s" % (
@@ -645,3 +715,55 @@ class QueryParser(object):
             filters.append(d)
 
         return filters
+
+
+def get_annotation_prefix(s):
+    return 'c7n:{}'.format(s)
+
+
+def merge_dict_list(dict_iter):
+    """take an list of dictionaries and merge them.
+
+    last dict wins/overwrites on keys.
+    """
+    result = {}
+    for d in dict_iter:
+        result.update(d)
+    return result
+
+
+def merge_dict(a, b):
+    """Perform a merge of dictionaries a and b
+
+    Any subdictionaries will be recursively merged.
+    Any leaf elements in the form of a list or scalar will use the value from a
+    """
+    d = {}
+    for k, v in a.items():
+        if k not in b:
+            d[k] = v
+        elif isinstance(v, dict) and isinstance(b[k], dict):
+            d[k] = merge_dict(v, b[k])
+    for k, v in b.items():
+        if k not in d:
+            d[k] = v
+    return d
+
+
+def select_keys(d, keys):
+    result = {}
+    for k in keys:
+        result[k] = d.get(k)
+    return result
+
+
+def get_human_size(size, precision=2):
+    # interesting discussion on 1024 vs 1000 as base
+    # https://en.wikipedia.org/wiki/Binary_prefix
+    suffixes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    suffixIndex = 0
+    while size > 1024:
+        suffixIndex += 1
+        size = size / 1024.0
+
+    return "%.*f %s" % (precision, size, suffixes[suffixIndex])

@@ -1,23 +1,15 @@
-# Copyright 2019 Microsoft Corporation
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
-import json
+try:
+    import certifi
+except ImportError:
+    certifi = None
 
-import certifi
 import jmespath
+
 import urllib3
-from six.moves.urllib import parse
+from urllib import parse
 
 from c7n import utils
 from .core import EventAction
@@ -42,6 +34,7 @@ class Webhook(EventAction):
                     policy_name: policy.name
     """
 
+    schema_alias = True
     schema = utils.type_schema(
         'webhook',
         required=['url'],
@@ -78,18 +71,19 @@ class Webhook(EventAction):
         self.query_params = self.data.get('query-params', {})
         self.headers = self.data.get('headers', {})
         self.method = self.data.get('method', 'POST')
+        self.lookup_data = None
+
+    def process(self, resources, event=None):
         self.lookup_data = {
             'account_id': self.manager.config.account_id,
             'region': self.manager.config.region,
             'execution_id': self.manager.ctx.execution_id,
             'execution_start': self.manager.ctx.start_time,
-            'policy': self.manager.data
+            'policy': self.manager.data,
+            'event': event
         }
 
-    def process(self, resources, event=None):
-        self.http = urllib3.PoolManager(
-            cert_reqs='CERT_REQUIRED',
-            ca_certs=certifi.where())
+        self.http = self._build_http_manager()
 
         if self.batch:
             for chunk in utils.chunks(resources, self.batch_size):
@@ -122,6 +116,18 @@ class Webhook(EventAction):
         except urllib3.exceptions.HTTPError as e:
             self.log.error("Error calling %s. Code: %s" % (prepared_url, e.reason))
 
+    def _build_http_manager(self):
+        pool_kwargs = {
+            'cert_reqs': 'CERT_REQUIRED',
+            'ca_certs': certifi and certifi.where() or None
+        }
+
+        proxy_url = utils.get_proxy_url(self.url)
+        if proxy_url:
+            return urllib3.ProxyManager(proxy_url, **pool_kwargs)
+        else:
+            return urllib3.PoolManager(**pool_kwargs)
+
     def _build_headers(self, resource):
         return {k: jmespath.search(v, resource) for k, v in self.headers.items()}
 
@@ -151,4 +157,4 @@ class Webhook(EventAction):
         if not self.body:
             return None
 
-        return json.dumps(jmespath.search(self.body, resource)).encode('utf-8')
+        return utils.dumps(jmespath.search(self.body, resource)).encode('utf-8')

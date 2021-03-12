@@ -1,21 +1,8 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 """
 CloudWatch Metrics suppport for resources
 """
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta
 
@@ -55,6 +42,27 @@ class MetricsFilter(Filter):
     period. ie. being stopped for an ec2 instance wouldn't lower the
     average cpu utilization.
 
+    The "missing-value" key allows a policy to specify a default
+    value when CloudWatch has no data to report:
+
+    .. code-block:: yaml
+
+      - name: elb-low-request-count
+        resource: elb
+        filters:
+          - type: metrics
+            name: RequestCount
+            statistics: Sum
+            days: 7
+            value: 7
+            missing-value: 0
+            op: less-than
+
+    This policy matches any ELB with fewer than 7 requests for the past week.
+    ELBs with no requests during that time will have an empty set of metrics.
+    Rather than skipping those resources, "missing-value: 0" causes the
+    policy to treat their request counts as 0.
+
     Note the default statistic for metrics is Average.
     """
 
@@ -62,7 +70,10 @@ class MetricsFilter(Filter):
         'metrics',
         **{'namespace': {'type': 'string'},
            'name': {'type': 'string'},
-           'dimensions': {'type': 'array', 'items': {'type': 'string'}},
+           'dimensions': {
+               'type': 'object',
+               'patternProperties': {
+                   '^.*$': {'type': 'string'}}},
            # Type choices
            'statistics': {'type': 'string', 'enum': [
                'Average', 'Sum', 'Maximum', 'Minimum', 'SampleCount']},
@@ -72,6 +83,7 @@ class MetricsFilter(Filter):
            'period': {'type': 'number'},
            'attr-multiplier': {'type': 'number'},
            'percent-attr': {'type': 'string'},
+           'missing-value': {'type': 'number'},
            'required': ('value', 'name')})
     schema_alias = True
     permissions = ("cloudwatch:GetMetricStatistics",)
@@ -116,8 +128,11 @@ class MetricsFilter(Filter):
 
         self.metric = self.data['name']
         self.end = datetime.utcnow()
-        self.start = self.end - duration
-        self.period = int(self.data.get('period', duration.total_seconds()))
+
+        # Adjust the start time to gracefully handle CloudWatch's retention schedule, which rolls up
+        # data points progressively (1 minute --> 5 minutes --> 1 hour) over time.
+        self.start = (self.end - duration).replace(minute=0)
+        self.period = int(self.data.get('period', (self.end - self.start).total_seconds()))
         self.statistics = self.data.get('statistics', 'Average')
         self.model = self.manager.get_model()
         self.op = OPERATORS[self.data.get('op', 'less-than')]
@@ -150,6 +165,14 @@ class MetricsFilter(Filter):
         return [{'Name': self.model.dimension,
                  'Value': resource[self.model.dimension]}]
 
+    def get_user_dimensions(self):
+        dims = []
+        if 'dimensions' not in self.data:
+            return dims
+        for k, v in self.data['dimensions'].items():
+            dims.append({'Name': k, 'Value': v})
+        return dims
+
     def process_resource_set(self, resource_set):
         client = local_session(
             self.manager.session_factory).client('cloudwatch')
@@ -159,6 +182,10 @@ class MetricsFilter(Filter):
             # if we overload dimensions with multiple resources we get
             # the statistics/average over those resources.
             dimensions = self.get_dimensions(r)
+            # Merge in any filter specified metrics, get_dimensions is
+            # commonly overridden so we can't do it there.
+            dimensions.extend(self.get_user_dimensions())
+
             collected_metrics = r.setdefault('c7n.metrics', {})
             # Note this annotation cache is policy scoped, not across
             # policies, still the lack of full qualification on the key
@@ -174,8 +201,20 @@ class MetricsFilter(Filter):
                     EndTime=self.end,
                     Period=self.period,
                     Dimensions=dimensions)['Datapoints']
+
+            # In certain cases CloudWatch reports no data for a metric.
+            # If the policy specifies a fill value for missing data, add
+            # that here before testing for matches. Otherwise, skip
+            # matching entirely.
             if len(collected_metrics[key]) == 0:
-                continue
+                if 'missing-value' not in self.data:
+                    continue
+                collected_metrics[key].append({
+                    'Timestamp': self.start,
+                    self.statistics: self.data['missing-value'],
+                    'c7n:detail': 'Fill value for missing data'
+                })
+
             if self.data.get('percent-attr'):
                 rvalue = r[self.data.get('percent-attr')]
                 if self.data.get('attr-multiplier'):
@@ -228,7 +267,7 @@ class ShieldMetrics(MetricsFilter):
     def get_dimensions(self, resource):
         return [{
             'Name': 'ResourceArn',
-            'Value': self.manager.get_arn(resource)}]
+            'Value': self.manager.get_arns([resource])[0]}]
 
     def process(self, resources, event=None):
         self.data['namespace'] = self.namespace

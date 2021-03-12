@@ -1,30 +1,17 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 from botocore.exceptions import ClientError
 
 from c7n.actions import BaseAction
 from c7n.manager import resources
-from c7n.query import QueryResourceManager
+from c7n.query import QueryResourceManager, TypeInfo
 from c7n.utils import local_session, type_schema
 
 
 @resources.register('ml-model')
 class MLModel(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'machinelearning'
         enum_spec = ('describe_ml_models', 'Results', None)
         id = 'MLModelId'
@@ -32,8 +19,8 @@ class MLModel(QueryResourceManager):
         date = 'CreatedAt'
         # need to specify request-mode dimension as well
         # dimension = 'MLModelId'
-        dimension = None
-        type = "mlmodel"
+        arn_type = "mlmodel"
+        permissions_enum = ('machinelearning:DescribeMLModels',)
 
 
 @MLModel.action_registry.register('delete')

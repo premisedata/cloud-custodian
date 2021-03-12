@@ -1,25 +1,13 @@
-# Copyright 2017-2019 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import logging
 
-from c7n.actions import Action
+from c7n.actions import Action, BaseAction
 from c7n.exceptions import PolicyValidationError
 from c7n.filters import ValueFilter, Filter
 from c7n.manager import resources
-from c7n.query import QueryResourceManager
+from c7n.tags import universal_augment
+from c7n.query import ConfigSource, DescribeSource, QueryResourceManager, TypeInfo
 from c7n.utils import local_session, type_schema
 
 from .aws import shape_validate, Arn
@@ -27,18 +15,30 @@ from .aws import shape_validate, Arn
 log = logging.getLogger('c7n.resources.cloudtrail')
 
 
+class DescribeTrail(DescribeSource):
+
+    def augment(self, resources):
+        return universal_augment(self.manager, resources)
+
+
 @resources.register('cloudtrail')
 class CloudTrail(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'cloudtrail'
         enum_spec = ('describe_trails', 'trailList', None)
         filter_name = 'trailNameList'
         filter_type = 'list'
+        arn_type = 'trail'
         arn = id = 'TrailARN'
         name = 'Name'
-        dimension = None
-        config_type = "AWS::CloudTrail::Trail"
+        cfn_type = config_type = "AWS::CloudTrail::Trail"
+        universal_taggable = object()
+
+    source_mapping = {
+        'describe': DescribeTrail,
+        'config': ConfigSource
+    }
 
 
 @CloudTrail.filter_registry.register('is-shadow')
@@ -78,7 +78,7 @@ class Status(ValueFilter):
     .. code-block:: yaml
 
         policies:
-          - name: cloudtrail-not-active
+          - name: cloudtrail-check-status
             resource: aws.cloudtrail
             filters:
             - type: status
@@ -87,16 +87,21 @@ class Status(ValueFilter):
     """
 
     schema = type_schema('status', rinherit=ValueFilter.schema)
+    schema_alias = False
     permissions = ('cloudtrail:GetTrailStatus',)
     annotation_key = 'c7n:TrailStatus'
 
     def process(self, resources, event=None):
+
+        non_account_trails = set()
+
         for r in resources:
             region = self.manager.config.region
             trail_arn = Arn.parse(r['TrailARN'])
 
             if (r.get('IsOrganizationTrail') and
                     self.manager.config.account_id != trail_arn.account_id):
+                non_account_trails.add(r['TrailARN'])
                 continue
             if r.get('HomeRegion') and r['HomeRegion'] != region:
                 region = trail_arn.region
@@ -108,7 +113,12 @@ class Status(ValueFilter):
             status.pop('ResponseMetadata')
             r[self.annotation_key] = status
 
-        return super(Status, self).process(resources)
+        if non_account_trails:
+            self.log.warning(
+                'found %d org cloud trail from different account that cant be processed',
+                len(non_account_trails))
+        return super(Status, self).process([
+            r for r in resources if r['TrailARN'] not in non_account_trails])
 
     def __call__(self, r):
         return self.match(r['c7n:TrailStatus'])
@@ -174,7 +184,7 @@ class SetLogging(Action):
     .. code-block:: yaml
 
       policies:
-        - name: cloudtrail-not-active
+        - name: cloudtrail-set-active
           resource: aws.cloudtrail
           filters:
            - type: status
@@ -206,3 +216,38 @@ class SetLogging(Action):
                 client.start_logging(Name=r['Name'])
             else:
                 client.stop_logging(Name=r['Name'])
+
+
+@CloudTrail.action_registry.register('delete')
+class DeleteTrail(BaseAction):
+    """ Delete a cloud trail
+
+    :example:
+
+    .. code-block:: yaml
+
+      policies:
+        - name: delete-cloudtrail
+          resource: aws.cloudtrail
+          filters:
+           - type: value
+             key: Name
+             value: delete-me
+             op: eq
+          actions:
+           - type: delete
+    """
+
+    schema = type_schema('delete')
+    permissions = ('cloudtrail:DeleteTrail',)
+
+    def process(self, resources):
+        client = local_session(self.manager.session_factory).client('cloudtrail')
+        shadow_check = IsShadow({'state': False}, self.manager)
+        shadow_check.embedded = True
+        resources = shadow_check.process(resources)
+        for r in resources:
+            try:
+                client.delete_trail(Name=r['Name'])
+            except client.exceptions.TrailNotFoundException:
+                continue

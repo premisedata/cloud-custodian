@@ -4,8 +4,7 @@ Generic Actions
 ===============
 
 The following actions can be applied to all policies for all resources. See the
-:ref:`Filters and Actions reference <policy>` for
-aws resource-specific actions.
+provider specific resource references.
 
 Webhook Action
 --------------
@@ -16,8 +15,7 @@ You may initiate a call per resource, or a call referencing a batch of resources
 Additionally you may define the body and query string using JMESPath references to
 the resource or resource array.
 
-.. c7n-schema:: Webhook
-    :module: c7n.actions.webhook
+.. c7n-schema:: aws.ec2.actions.webhook
 
 
 JMESPath queries for query-params, headers and body will have access to the following data:

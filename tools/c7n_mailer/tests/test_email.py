@@ -1,29 +1,17 @@
-# Copyright 2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 import boto3
 import copy
 import os
 import unittest
 
-import six
 from c7n_mailer.email_delivery import EmailDelivery
 from common import logger, get_ldap_lookup
 from common import MAILER_CONFIG, RESOURCE_1, SQS_MESSAGE_1, SQS_MESSAGE_4
-from mock import patch, call
+from mock import patch, call, MagicMock
 
-from c7n_mailer.utils_email import is_email
+from c7n_mailer.utils_email import is_email, priority_header_is_valid, get_mimetext_message
 
 # note principalId is very org/domain specific for federated?, it would be good to get
 # confirmation from capone on this event / test.
@@ -77,7 +65,7 @@ class EmailTest(unittest.TestCase):
         messages_map = deliver.get_to_addrs_email_messages_map(msg)
 
         with patch("smtplib.SMTP") as mock_smtp:
-            with patch('c7n_mailer.email_delivery.kms_decrypt') as mock_decrypt:
+            with patch('c7n_mailer.utils.kms_decrypt') as mock_decrypt:
                 mock_decrypt.return_value = 'xyz'
                 for email_addrs, mimetext_msg in messages_map.items():
                     deliver.send_c7n_email(msg, list(email_addrs), mimetext_msg)
@@ -85,12 +73,12 @@ class EmailTest(unittest.TestCase):
             mock_smtp.assert_has_calls([call().login('alice', 'xyz')])
 
     def test_priority_header_is_valid(self):
-        self.assertFalse(self.email_delivery.priority_header_is_valid('0'))
-        self.assertFalse(self.email_delivery.priority_header_is_valid('-1'))
-        self.assertFalse(self.email_delivery.priority_header_is_valid('6'))
-        self.assertFalse(self.email_delivery.priority_header_is_valid('sd'))
-        self.assertTrue(self.email_delivery.priority_header_is_valid('1'))
-        self.assertTrue(self.email_delivery.priority_header_is_valid('5'))
+        self.assertFalse(priority_header_is_valid('0', self.email_delivery.logger))
+        self.assertFalse(priority_header_is_valid('-1', self.email_delivery.logger))
+        self.assertFalse(priority_header_is_valid('6', self.email_delivery.logger))
+        self.assertFalse(priority_header_is_valid('sd', self.email_delivery.logger))
+        self.assertTrue(priority_header_is_valid('1', self.email_delivery.logger))
+        self.assertTrue(priority_header_is_valid('5', self.email_delivery.logger))
 
     def test_get_valid_emails_from_list(self):
         list_1 = [
@@ -142,13 +130,31 @@ class EmailTest(unittest.TestCase):
         self.assertEqual(items[0][0], to_emails)
         self.assertEqual(items[0][1]['to'], ', '.join(to_emails))
 
+    def test_email_to_email_message_map_additional_headers(self):
+        conf = dict(MAILER_CONFIG)
+        conf['additional_email_headers'] = {
+            'X-Foo': 'X-Foo-Value',
+            'X-Bar': '1234'
+        }
+        email_delivery = MockEmailDelivery(
+            conf, self.aws_session, logger
+        )
+        SQS_MESSAGE = copy.deepcopy(SQS_MESSAGE_1)
+        SQS_MESSAGE['policy']['actions'][1].pop('email_ldap_username_manager', None)
+        email_addrs_to_email_message_map = email_delivery.get_to_addrs_email_messages_map(
+            SQS_MESSAGE
+        )
+        for _, mimetext_msg in email_addrs_to_email_message_map.items():
+            self.assertEqual(mimetext_msg['X-Foo'], 'X-Foo-Value')
+            self.assertEqual(mimetext_msg['X-Bar'], '1234')
+
     def test_smtp_called_once(self):
         SQS_MESSAGE = copy.deepcopy(SQS_MESSAGE_1)
         to_addrs_to_email_messages_map = self.email_delivery.get_to_addrs_email_messages_map(
             SQS_MESSAGE
         )
         with patch("smtplib.SMTP") as mock_smtp:
-            for email_addrs, mimetext_msg in six.iteritems(to_addrs_to_email_messages_map):
+            for email_addrs, mimetext_msg in to_addrs_to_email_messages_map.items():
                 self.email_delivery.send_c7n_email(SQS_MESSAGE, list(email_addrs), mimetext_msg)
 
                 self.assertEqual(mimetext_msg['X-Priority'], '1 (Highest)')
@@ -185,7 +191,7 @@ class EmailTest(unittest.TestCase):
             SQS_MESSAGE
         )
         with patch("smtplib.SMTP") as mock_smtp:
-            for email_addrs, mimetext_msg in six.iteritems(to_addrs_to_email_messages_map):
+            for email_addrs, mimetext_msg in to_addrs_to_email_messages_map.items():
                 self.email_delivery.send_c7n_email(SQS_MESSAGE, list(email_addrs), mimetext_msg)
                 self.assertEqual(mimetext_msg.get('X-Priority'), None)
                 # self.assertEqual(mimetext_msg.get('X-Priority'), None)
@@ -292,7 +298,68 @@ class EmailTest(unittest.TestCase):
 
         self.assertEqual(ldap_emails, ['milton@initech.com'])
 
+    def test_get_resource_owner_emails_from_resource_org_domain_not_invoked(self):
+        config = copy.deepcopy(MAILER_CONFIG)
+        logger_mock = MagicMock()
+
+        # Enable org_domain
+        config['org_domain'] = "test.com"
+
+        # Add "CreatorName" to contact tags to avoid creating a new
+        # resource.
+        config['contact_tags'].append('CreatorName')
+
+        self.email_delivery = MockEmailDelivery(config, self.aws_session, logger_mock)
+        org_emails = self.email_delivery.get_resource_owner_emails_from_resource(
+            SQS_MESSAGE_1,
+            RESOURCE_1
+        )
+
+        assert org_emails == ['milton@initech.com', 'peter@initech.com']
+        assert call("Using org_domain to reconstruct email addresses from contact_tags values") \
+            not in logger_mock.debug.call_args_list
+
+    def test_get_resource_owner_emails_from_resource_org_domain(self):
+        config = copy.deepcopy(MAILER_CONFIG)
+        logger_mock = MagicMock()
+
+        # Enable org_domain and disable ldap lookups
+        # If ldap lookups are enabled, org_domain logic is not invoked.
+        config['org_domain'] = "test.com"
+        del config['ldap_uri']
+
+        # Add "CreatorName" to contact tags to avoid creating a new
+        # resource.
+        config['contact_tags'].append('CreatorName')
+
+        self.email_delivery = MockEmailDelivery(config, self.aws_session, logger_mock)
+        org_emails = self.email_delivery.get_resource_owner_emails_from_resource(
+            SQS_MESSAGE_1,
+            RESOURCE_1
+        )
+
+        assert org_emails == ['milton@initech.com', 'peter@test.com']
+        logger_mock.debug.assert_called_with(
+            "Using org_domain to reconstruct email addresses from contact_tags values")
+
     def test_cc_email_functionality(self):
-        email = self.email_delivery.get_mimetext_message(
+        email = get_mimetext_message(
+            self.email_delivery.config, self.email_delivery.logger,
             SQS_MESSAGE_4, SQS_MESSAGE_4['resources'], ['hello@example.com'])
         self.assertEqual(email['Cc'], 'hello@example.com, cc@example.com')
+
+    def test_sendgrid(self):
+        config = copy.deepcopy(MAILER_CONFIG)
+        logger_mock = MagicMock()
+
+        config['sendgrid_api_key'] = 'SENDGRID_API_KEY'
+        del config['smtp_server']
+
+        delivery = MockEmailDelivery(config, self.aws_session, logger_mock)
+
+        with patch("sendgrid.SendGridAPIClient.send") as mock_send:
+            with patch('c7n_mailer.utils.kms_decrypt') as mock_decrypt:
+                mock_decrypt.return_value = 'xyz'
+                delivery.send_c7n_email(SQS_MESSAGE_1, None, None)
+                mock_decrypt.assert_called_once()
+            mock_send.assert_called()

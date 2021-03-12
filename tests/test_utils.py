@@ -1,32 +1,27 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import json
+import ipaddress
 import os
-import sys
 import tempfile
 import time
 
 from botocore.exceptions import ClientError
 from dateutil.parser import parse as parse_date
-import six
+import mock
 
-from c7n import ipaddress, utils
+from c7n import utils
 from c7n.config import Config
-
 from .common import BaseTest
+
+
+class TestTesting(BaseTest):
+
+    def test_assert_regex(self):
+        self.assertRaises(
+            AssertionError,
+            self.assertRegex,
+            "^hello", "not hello world")
 
 
 class Backoff(BaseTest):
@@ -69,51 +64,6 @@ class Backoff(BaseTest):
             self.assertTrue(i < maxv)
 
 
-class WorkerDecorator(BaseTest):
-
-    def test_method_worker(self):
-
-        class foo(object):
-
-            @utils.worker
-            def bar(self, err=False):
-                """abc"""
-                if err:
-                    raise ValueError("foo")
-                return 42
-
-        i = foo()
-        log_output = self.capture_logging("c7n.worker")
-        self.assertEqual(i.bar(), 42)
-        self.assertRaises(ValueError, i.bar, True)
-        self.assertTrue(
-            log_output.getvalue().startswith(
-                "Error invoking tests.test_utils.bar\nTraceback"
-            )
-        )
-
-    def test_function_worker(self):
-
-        @utils.worker
-        def rabbit(err=False):
-            """what's up doc"""
-            if err:
-                raise ValueError("more carrots")
-            return 42
-
-        self.assertEqual(rabbit.__doc__, "what's up doc")
-        log_output = self.capture_logging("c7n.worker")
-        self.assertEqual(rabbit(), 42)
-        self.assertEqual(log_output.getvalue(), "")
-        self.assertRaises(ValueError, rabbit, True)
-        self.assertTrue(
-            log_output.getvalue().startswith(
-                "Error invoking tests.test_utils.rabbit\nTraceback"
-            )
-        )
-        self.assertTrue("more carrots" in log_output.getvalue())
-
-
 class UrlConfTest(BaseTest):
 
     def test_parse_url(self):
@@ -139,7 +89,56 @@ class UrlConfTest(BaseTest):
             {'path': '', 'scheme': 'aws', 'netloc': '', 'url': 'aws://'})
 
 
+class ProxyUrlTest(BaseTest):
+    @mock.patch('c7n.utils.getproxies', return_value={})
+    def test_no_proxy(self, get_proxies_mock):
+        self.assertEqual(None, utils.get_proxy_url('http://web.site'))
+
+    def test_http_proxy_with_full_url(self):
+        with mock.patch.dict(os.environ,
+                             {'http_proxy': 'http://mock.http.proxy.server:8000'},
+                             clear=True):
+            proxy_url = utils.get_proxy_url('http://web.site')
+            self.assertEqual(proxy_url, 'http://mock.http.proxy.server:8000')
+
+    def test_http_proxy_with_relative_url(self):
+        with mock.patch.dict(os.environ,
+                             {'http_proxy': 'http://mock.http.proxy.server:8000'},
+                             clear=True):
+            proxy_url = utils.get_proxy_url('/relative/url')
+            self.assertEqual(proxy_url, None)
+
+    def test_all_proxy_with_full_url(self):
+        with mock.patch.dict(os.environ,
+                             {'all_proxy': 'http://mock.all.proxy.server:8000'},
+                             clear=True):
+            proxy_url = utils.get_proxy_url('http://web.site')
+            self.assertEqual(proxy_url, 'http://mock.all.proxy.server:8000')
+
+
 class UtilTest(BaseTest):
+
+    def test_merge_dict_list(self):
+
+        assert utils.merge_dict_list([
+            {'a': 1, 'x': 0}, {'b': 2, 'x': 0}, {'c': 3, 'x': 1}]) == {
+                'a': 1, 'b': 2, 'c': 3, 'x': 1}
+
+    def test_merge_dict(self):
+        a = {'detail': {'eventName': ['CreateSubnet'],
+                    'eventSource': ['ec2.amazonaws.com']},
+             'detail-type': ['AWS API Call via CloudTrail']}
+        b = {'detail': {'userIdentity': {
+            'userName': [{'anything-but': 'deputy'}]}}}
+        self.assertEqual(
+            utils.merge_dict(a, b),
+            {'detail-type': ['AWS API Call via CloudTrail'],
+             'detail': {
+                 'eventName': ['CreateSubnet'],
+                 'eventSource': ['ec2.amazonaws.com'],
+                 'userIdentity': {
+                     'userName': [
+                         {'anything-but': 'deputy'}]}}})
 
     def test_local_session_region(self):
         policies = [
@@ -174,21 +173,15 @@ class UtilTest(BaseTest):
         self.assertEqual("{:+5M%M}".format(utils.FormatDate(d)), "05")
 
     def test_group_by(self):
-        sorter = lambda x: x  # NOQA E731
-        sorter = sys.version_info.major == 2 and sorted or sorter
         items = [{}, {"Type": "a"}, {"Type": "a"}, {"Type": "b"}]
-        self.assertEqual(
-            sorter(list(utils.group_by(items, "Type").keys())), [None, "a", "b"]
-        )
+        self.assertEqual(list(utils.group_by(items, "Type").keys()), [None, "a", "b"])
         items = [
             {},
             {"Type": {"Part": "a"}},
             {"Type": {"Part": "a"}},
             {"Type": {"Part": "b"}},
         ]
-        self.assertEqual(
-            sorter(list(utils.group_by(items, "Type.Part").keys())), [None, "a", "b"]
-        )
+        self.assertEqual(list(utils.group_by(items, "Type.Part").keys()), [None, "a", "b"])
 
     def write_temp_file(self, contents, suffix=".tmp"):
         """ Write a temporary file and return the filename.
@@ -326,6 +319,17 @@ class UtilTest(BaseTest):
             ],
         )
 
+    def test_camel_case_implicit(self):
+        d = {'ownerId': 'abc',
+             'modifyDateIso': '2021-01-05T13:43:26.749906',
+             'createTimeMillis': '1609854135165',
+             'createTime': '1609854135'}
+        r = utils.camelResource(d, implicitTitle=False, implicitDate=True)
+        assert set(r) == {'ownerId', 'modifyDateIso', 'createTimeMillis', 'createTime'}
+        r.pop('ownerId')
+        for k in r:
+            assert r[k].strftime('%Y/%m/%d') == '2021/01/05'
+
     def test_camel_case(self):
         d = {
             "zebraMoon": [{"instanceId": 123}, "moon"],
@@ -374,7 +378,7 @@ class UtilTest(BaseTest):
         # Not a real schema, just doing a smoke test of the function
         # properties = 'target'
 
-        class FakeResource(object):
+        class FakeResource:
             schema = {
                 "additionalProperties": False,
                 "properties": {
@@ -402,11 +406,11 @@ class UtilTest(BaseTest):
         # are returned instead of a dictionary.
         FakeResource.schema = {}
         ret = utils.reformat_schema(FakeResource)
-        self.assertIsInstance(ret, six.text_type)
+        self.assertIsInstance(ret, str)
 
         delattr(FakeResource, "schema")
         ret = utils.reformat_schema(FakeResource)
-        self.assertIsInstance(ret, six.text_type)
+        self.assertIsInstance(ret, str)
 
     def test_load_file(self):
         # Basic load
@@ -453,3 +457,11 @@ class UtilTest(BaseTest):
                  'b': '{account_id}'}, account_id=21),
             {'k': '{limit}',
              'b': '21'})
+
+
+def test_parse_date_floor():
+    # bulk of parse date tests are actually in test_filters
+    assert utils.parse_date(30) is None
+    assert utils.parse_date(1) is None
+    assert utils.parse_date('3000') is None
+    assert utils.parse_date('30') is None

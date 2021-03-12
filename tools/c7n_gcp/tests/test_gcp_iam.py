@@ -1,32 +1,28 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
-from gcp_common import BaseTest
+from gcp_common import BaseTest, event_data
 
 
 class ProjectRoleTest(BaseTest):
 
     def test_get(self):
         factory = self.replay_flight_data('iam-project-role')
+
         p = self.load_policy({
             'name': 'role-get',
-            'resource': 'gcp.project-role'},
+            'resource': 'gcp.project-role',
+            'mode': {
+                'type': 'gcp-audit',
+                'methods': ['google.iam.admin.v1.CreateRole']}},
             session_factory=factory)
-        resource = p.resource_manager.get_resource(
-            {'project_id': 'custodian-1291',
-             'role_name': 'projects/custodian-1291/roles/CustomDeveloperRole'})
-        self.assertEqual(resource['title'], 'Developer Role')
+
+        exec_mode = p.get_execution_mode()
+        event = event_data('iam-role-create.json')
+        roles = exec_mode.run(event, None)
+
+        self.assertEqual(len(roles), 1)
+        self.assertEqual(roles[0]['name'], 'projects/cloud-custodian/roles/CustomRole1')
 
 
 class ServiceAccountTest(BaseTest):
@@ -38,8 +34,8 @@ class ServiceAccountTest(BaseTest):
             'resource': 'gcp.service-account'},
             session_factory=factory)
         resource = p.resource_manager.get_resource(
-            {'project_id': 'custodian-1291',
-             'email_id': 'devtest@custodian-1291.iam.gserviceaccount.com',
+            {'project_id': 'cloud-custodian',
+             'email_id': 'devtest@cloud-custodian.iam.gserviceaccount.com',
              'unique_id': '110936229421407410679'})
         self.assertEqual(resource['displayName'], 'devtest')
 

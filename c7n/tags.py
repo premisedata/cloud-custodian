@@ -1,16 +1,5 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 """
 Generic EC2 Resource Tag / Filters and actions
 
@@ -19,8 +8,6 @@ to ec2 (subnets, vpc, security-groups, volumes, instances,
 snapshots).
 
 """
-from __future__ import absolute_import, division, print_function, unicode_literals
-
 from collections import Counter
 from concurrent.futures import as_completed
 
@@ -28,7 +15,6 @@ from datetime import datetime, timedelta
 from dateutil import tz as tzutil
 from dateutil.parser import parse
 
-import itertools
 import jmespath
 import time
 
@@ -81,7 +67,6 @@ def register_universal_tags(filters, actions, compatibility=True):
 def universal_augment(self, resources):
     # Resource Tagging API Support
     # https://docs.aws.amazon.com/awsconsolehelpdocs/latest/gsg/supported-resources.html
-
     # Bail on empty set
     if not resources:
         return resources
@@ -97,23 +82,19 @@ def universal_augment(self, resources):
     from c7n.query import RetryPageIterator
     paginator = client.get_paginator('get_resources')
     paginator.PAGE_ITERATOR_CLS = RetryPageIterator
-    resource_type = getattr(self.get_model(), 'resource_type', None)
 
-    if not resource_type:
-        resource_type = self.get_model().service
-        if self.get_model().type:
-            resource_type += ":" + self.get_model().type
+    rfetch = [r for r in resources if 'Tags' not in r]
 
-    resource_tag_map_list = list(itertools.chain(
-        *[p['ResourceTagMappingList'] for p in paginator.paginate(
-            ResourceTypeFilters=[resource_type])]))
-    resource_tag_map = {
-        r['ResourceARN']: r['Tags'] for r in resource_tag_map_list}
-
-    for arn, r in zip(self.get_arns(resources), resources):
-        if 'Tags' in r:
-            continue
-        r['Tags'] = resource_tag_map.get(arn, [])
+    for arn_resource_set in utils.chunks(
+            zip(self.get_arns(rfetch), rfetch), 100):
+        arn_resource_map = dict(arn_resource_set)
+        resource_tag_results = client.get_resources(
+            ResourceARNList=list(arn_resource_map.keys())).get(
+                'ResourceTagMappingList', ())
+        resource_tag_map = {
+            r['ResourceARN']: r['Tags'] for r in resource_tag_results}
+        for arn, r in arn_resource_map.items():
+            r['Tags'] = resource_tag_map.get(arn, [])
 
     return resources
 
@@ -460,7 +441,7 @@ class RemoveTag(Action):
     concurrency = 2
 
     schema = utils.type_schema(
-        'untag', aliases=('unmark', 'remove-tag'),
+        'remove-tag', aliases=('unmark', 'untag', 'remove-tag'),
         tags={'type': 'array', 'items': {'type': 'string'}})
     schema_alias = True
     permissions = ('ec2:DeleteTags',)
@@ -612,8 +593,8 @@ class TagDelayedAction(Action):
         'mark-for-op',
         tag={'type': 'string'},
         msg={'type': 'string'},
-        days={'type': 'integer', 'minimum': 0, 'exclusiveMinimum': False},
-        hours={'type': 'integer', 'minimum': 0, 'exclusiveMinimum': False},
+        days={'type': 'number', 'minimum': 0},
+        hours={'type': 'number', 'minimum': 0},
         tz={'type': 'string'},
         op={'type': 'string'})
     schema_alias = True
@@ -833,7 +814,7 @@ class UniversalTag(Tag):
 
     batch_size = 20
     concurrency = 1
-    permissions = ('resourcegroupstaggingapi:TagResources',)
+    permissions = ('tag:TagResources',)
 
     def process(self, resources):
         self.id_key = self.manager.get_model().id
@@ -874,7 +855,7 @@ class UniversalUntag(RemoveTag):
 
     batch_size = 20
     concurrency = 1
-    permissions = ('resourcegroupstaggingapi:UntagResources',)
+    permissions = ('tag:UntagResources',)
 
     def get_client(self):
         return utils.local_session(
@@ -908,8 +889,7 @@ class UniversalTagDelayedAction(TagDelayedAction):
     """
 
     batch_size = 20
-    concurrency = 2
-    permissions = ('resourcegroupstaggingapi:TagResources',)
+    concurrency = 1
 
     def process(self, resources):
         self.tz = tzutil.gettz(
@@ -1020,18 +1000,23 @@ class CopyRelatedResourceTag(Tag):
         return self
 
     def process(self, resources):
-        related_resources = list(
-            zip(jmespath.search('[].[%s || "c7n:NotFound"]|[]' % self.data['key'], resources),
-                resources))
-        related_ids = set([r[0] for r in related_resources])
-        related_ids.discard('c7n:NotFound')
+        related_resources = []
+        for rrid, r in zip(jmespath.search('[].[%s]' % self.data['key'], resources),
+                           resources):
+            related_resources.append((rrid[0], r))
+        related_ids = {r[0] for r in related_resources}
+        missing = False
+        if None in related_ids:
+            missing = True
+            related_ids.discard(None)
         related_tag_map = self.get_resource_tag_map(self.data['resource'], related_ids)
 
         missing_related_tags = related_ids.difference(related_tag_map.keys())
-        if not self.data.get('skip_missing', True) and missing_related_tags:
+        if not self.data.get('skip_missing', True) and (missing_related_tags or missing):
             raise PolicyExecutionError(
                 "Unable to find all %d %s related resources tags %d missing" % (
-                    len(related_ids), self.data['resource'], len(missing_related_tags)))
+                    len(related_ids), self.data['resource'],
+                    len(missing_related_tags) + int(missing)))
 
         # rely on resource manager tag action implementation as it can differ between resources
         tag_action = self.manager.action_registry.get('tag')({}, self.manager)
@@ -1041,7 +1026,9 @@ class CopyRelatedResourceTag(Tag):
         stats = Counter()
 
         for related, r in related_resources:
-            if related in missing_related_tags or not related_tag_map[related]:
+            if (related is None or
+                related in missing_related_tags or
+                    not related_tag_map[related]):
                 stats['missing'] += 1
             elif self.process_resource(
                     client, r, related_tag_map[related], self.data['tags'], tag_action):
@@ -1060,16 +1047,15 @@ class CopyRelatedResourceTag(Tag):
 
         if tag_keys == '*':
             tags = {k: v for k, v in related_tags.items()
-                    if resource_tags.get(k) != v}
+                    if resource_tags.get(k) != v and not k.startswith('aws:')}
         else:
             tags = {k: v for k, v in related_tags.items()
                     if k in tag_keys and resource_tags.get(k) != v}
         if not tags:
             return
-        tag_action.process_resource_set(
-            client,
-            resource_set=[r],
-            tags=[{'Key': k, 'Value': v} for k, v in tags.items()])
+        if not isinstance(tag_action, UniversalTag):
+            tags = [{'Key': k, 'Value': v} for k, v in tags.items()]
+        tag_action.process_resource_set(client, [r], tags)
         return True
 
     def get_resource_tag_map(self, r_type, ids):
@@ -1078,10 +1064,10 @@ class CopyRelatedResourceTag(Tag):
         """
         manager = self.manager.get_resource_manager(r_type)
         r_id = manager.resource_type.id
-        # TODO only fetch resource with the given ids.
+
         return {
             r[r_id]: {t['Key']: t['Value'] for t in r.get('Tags', [])}
-            for r in manager.resources() if r[r_id] in ids
+            for r in manager.get_resources(list(ids))
         }
 
     @classmethod
@@ -1091,8 +1077,7 @@ class CopyRelatedResourceTag(Tag):
         resource_class.action_registry.register('copy-related-tag', klass)
 
 
-aws_resources.subscribe(
-    aws_resources.EVENT_REGISTER, CopyRelatedResourceTag.register_resources)
+aws_resources.subscribe(CopyRelatedResourceTag.register_resources)
 
 
 def universal_retry(method, ResourceARNList, **kw):
@@ -1169,20 +1154,20 @@ def coalesce_copy_user_tags(resource, copy_tags, user_tags):
 
     if isinstance(copy_tags, list):
         if '*' in copy_tags:
-            copy_keys = set([t['Key'] for t in r_tags])
+            copy_keys = {t['Key'] for t in r_tags}
         else:
             copy_keys = set(copy_tags)
 
     if isinstance(copy_tags, bool):
         if copy_tags is True:
-            copy_keys = set([t['Key'] for t in r_tags])
+            copy_keys = {t['Key'] for t in r_tags}
         else:
             copy_keys = set()
 
     if isinstance(user_tags, dict):
         user_tags = [{'Key': k, 'Value': v} for k, v in user_tags.items()]
 
-    user_keys = set([t['Key'] for t in user_tags])
+    user_keys = {t['Key'] for t in user_tags}
     tags_diff = list(copy_keys.difference(user_keys))
     resource_tags_to_copy = [t for t in r_tags if t['Key'] in tags_diff]
     user_tags.extend(resource_tags_to_copy)

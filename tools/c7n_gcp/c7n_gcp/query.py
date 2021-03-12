@@ -1,35 +1,24 @@
-# Copyright 2017-2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 import jmespath
 import json
+import itertools
 import logging
-import six
 
 from googleapiclient.errors import HttpError
 
 from c7n.actions import ActionRegistry
 from c7n.filters import FilterRegistry
 from c7n.manager import ResourceManager
-from c7n.query import sources
-from c7n.utils import local_session
+from c7n.query import sources, MaxResourceLimit
+from c7n.utils import local_session, chunks
 
 
 log = logging.getLogger('c7n_gcp.query')
 
 
-class ResourceQuery(object):
+class ResourceQuery:
 
     def __init__(self, session_factory):
         self.session_factory = session_factory
@@ -74,7 +63,7 @@ class ResourceQuery(object):
 
 
 @sources.register('describe-gcp')
-class DescribeSource(object):
+class DescribeSource:
 
     def __init__(self, manager):
         self.manager = manager
@@ -86,7 +75,61 @@ class DescribeSource(object):
         return self.query.filter(self.manager, **query)
 
     def get_permissions(self):
-        return ()
+        m = self.manager.resource_type
+        if m.permissions:
+            return m.permissions
+        method = m.enum_spec[0]
+        if method == 'aggregatedList':
+            method = 'list'
+        component = m.component
+        if '.' in component:
+            component = component.split('.')[-1]
+        return ("%s.%s.%s" % (
+            m.perm_service or m.service, component, method),)
+
+    def augment(self, resources):
+        return resources
+
+
+@sources.register('inventory')
+class AssetInventory:
+
+    permissions = ("cloudasset.assets.searchAllResources",
+                   "cloudasset.assets.exportResource")
+
+    def __init__(self, manager):
+        self.manager = manager
+
+    def get_resources(self, query):
+        session = local_session(self.manager.session_factory)
+        if query is None:
+            query = {}
+        if 'scope' not in query:
+            query['scope'] = 'projects/%s' % session.get_default_project()
+        if 'assetTypes' not in query:
+            query['assetTypes'] = [self.manager.resource_type.asset_type]
+
+        search_client = session.client('cloudasset', 'v1p1beta1', 'resources')
+        resource_client = session.client('cloudasset', 'v1', 'v1')
+        resources = []
+
+        results = list(search_client.execute_paged_query('searchAll', query))
+        for resource_set in chunks(itertools.chain(*[rs['results'] for rs in results]), 100):
+            rquery = {
+                'parent': query['scope'],
+                'contentType': 'RESOURCE',
+                'assetNames': [r['name'] for r in resource_set]}
+            for history_result in resource_client.execute_query(
+                    'batchGetAssetsHistory', rquery).get('assets', ()):
+                resource = history_result['asset']['resource']['data']
+                resource['c7n:history'] = {
+                    'window': history_result['window'],
+                    'ancestors': history_result['asset']['ancestors']}
+                resources.append(resource)
+        return resources
+
+    def get_permissions(self):
+        return self.permissions
 
     def augment(self, resources):
         return resources
@@ -105,15 +148,14 @@ class QueryMeta(type):
         return super(QueryMeta, cls).__new__(cls, name, parents, attrs)
 
 
-@six.add_metaclass(QueryMeta)
-class QueryResourceManager(ResourceManager):
+class QueryResourceManager(ResourceManager, metaclass=QueryMeta):
 
     def __init__(self, data, options):
         super(QueryResourceManager, self).__init__(data, options)
         self.source = self.get_source(self.source_type)
 
     def get_permissions(self):
-        return ()
+        return self.source.get_permissions()
 
     def get_source(self, source_type):
         return sources.get(source_type)(self)
@@ -149,16 +191,34 @@ class QueryResourceManager(ResourceManager):
         key = self.get_cache_key(q)
         resources = self._fetch_resources(q)
         self._cache.save(key, resources)
-        return self.filter_resources(resources)
+
+        resource_count = len(resources)
+        resources = self.filter_resources(resources)
+
+        # Check if we're out of a policies execution limits.
+        if self.data == self.ctx.policy.data:
+            self.check_resource_limit(len(resources), resource_count)
+        return resources
+
+    def check_resource_limit(self, selection_count, population_count):
+        """Check if policy's execution affects more resources then its limit.
+        """
+        p = self.ctx.policy
+        max_resource_limits = MaxResourceLimit(p, selection_count, population_count)
+        return max_resource_limits.check_resource_limits()
 
     def _fetch_resources(self, query):
         try:
             return self.augment(self.source.get_resources(query)) or []
         except HttpError as e:
-            error = extract_error(e)
-            if error is None:
+            error_reason, error_code, error_message = extract_errors(e)
+
+            if error_reason is None and error_code is None:
                 raise
-            elif error == 'accessNotConfigured':
+            if error_code == 403 and 'disabled' in error_message:
+                log.warning(error_message)
+                return []
+            elif error_reason == 'accessNotConfigured':
                 log.warning(
                     "Resource:%s not available -> Service:%s not enabled on %s",
                     self.type,
@@ -192,8 +252,10 @@ class ChildResourceManager(QueryResourceManager):
 
         resources = []
         annotation_key = self.resource_type.get_parent_annotation_key()
+        parent_query = self.get_parent_resource_query()
         parent_resource_manager = self.get_resource_manager(
-            self.resource_type.parent_spec['resource']
+            resource_type=self.resource_type.parent_spec['resource'],
+            data=({'query': parent_query} if parent_query else {})
         )
 
         for parent_instance in parent_resource_manager.resources():
@@ -215,6 +277,12 @@ class ChildResourceManager(QueryResourceManager):
         mappings = self.resource_type.parent_spec['child_enum_params']
         return self._extract_fields(parent_instance, mappings)
 
+    def get_parent_resource_query(self):
+        parent_spec = self.resource_type.parent_spec
+        enabled = parent_spec['use_child_query'] if 'use_child_query' in parent_spec else False
+        if enabled and 'query' in self.data:
+            return self.data.get('query')
+
     @staticmethod
     def _extract_fields(source, mappings):
         result = {}
@@ -235,8 +303,7 @@ class TypeMeta(type):
             cls.version)
 
 
-@six.add_metaclass(TypeMeta)
-class TypeInfo(object):
+class TypeInfo(metaclass=TypeMeta):
 
     # api client construction information
     service = None
@@ -256,6 +323,19 @@ class TypeInfo(object):
     get = None
     # for get methods that require the full event payload
     get_requires_event = False
+    perm_service = None
+    permissions = ()
+
+    labels = False
+    labels_op = 'setLabels'
+
+    # required for reporting
+    id = None
+    name = None
+    default_report_fields = ()
+
+    # cloud asset inventory type
+    asset_type = None
 
 
 class ChildTypeInfo(TypeInfo):
@@ -269,12 +349,62 @@ class ChildTypeInfo(TypeInfo):
 
 
 ERROR_REASON = jmespath.compile('error.errors[0].reason')
+ERROR_CODE = jmespath.compile('error.code')
+ERROR_MESSAGE = jmespath.compile('error.message')
 
 
-def extract_error(e):
-
+def extract_errors(e):
     try:
         edata = json.loads(e.content)
     except Exception:
-        return None
-    return ERROR_REASON.search(edata)
+        edata = None
+
+    return ERROR_REASON.search(edata), ERROR_CODE.search(edata), ERROR_MESSAGE.search(edata)
+
+
+class GcpLocation:
+    """
+    The `_locations` dict is formed by the string keys representing locations taken from
+    `KMS <https://cloud.google.com/kms/docs/reference/rest/v1/projects.locations/list>`_ and
+    `App Engine <https://cloud.google.com/appengine/docs/admin-api/reference/rest/v1
+    /apps.locations/list>`_ and list values containing the string names of the services
+    the locations are available for.
+    """
+    _locations = {'eur4': ['kms'],
+                  'global': ['kms'],
+                  'europe-west4': ['kms'],
+                  'asia-east2': ['appengine', 'kms'],
+                  'asia-east1': ['kms'],
+                  'asia': ['kms'],
+                  'europe-north1': ['kms'],
+                  'us-central1': ['kms'],
+                  'nam4': ['kms'],
+                  'asia-southeast1': ['kms'],
+                  'europe': ['kms'],
+                  'australia-southeast1': ['appengine', 'kms'],
+                  'us-central': ['appengine'],
+                  'asia-south1': ['appengine', 'kms'],
+                  'us-west1': ['kms'],
+                  'us-west2': ['appengine', 'kms'],
+                  'asia-northeast2': ['appengine', 'kms'],
+                  'asia-northeast1': ['appengine', 'kms'],
+                  'europe-west2': ['appengine', 'kms'],
+                  'europe-west3': ['appengine', 'kms'],
+                  'us-east4': ['appengine', 'kms'],
+                  'europe-west1': ['kms'],
+                  'europe-west6': ['appengine', 'kms'],
+                  'us': ['kms'],
+                  'us-east1': ['appengine', 'kms'],
+                  'northamerica-northeast1': ['appengine', 'kms'],
+                  'europe-west': ['appengine'],
+                  'southamerica-east1': ['appengine', 'kms']}
+
+    @classmethod
+    def get_service_locations(cls, service):
+        """
+        Returns a list of the locations that have a given service in associated value lists.
+
+        :param service: a string representing the name of a service locations are queried for
+        """
+        return [location for location in GcpLocation._locations
+                if service in GcpLocation._locations[location]]

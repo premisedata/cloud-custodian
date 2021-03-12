@@ -1,20 +1,9 @@
-# Copyright 2019 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 import time
 
-from gcp_common import BaseTest
+from gcp_common import BaseTest, event_data
 from googleapiclient.errors import HttpError
 
 
@@ -86,47 +75,6 @@ class SqlInstanceTest(BaseTest):
             self.assertTrue("does not exist" in str(e))
 
 
-class SqlDatabaseTest(BaseTest):
-
-    def test_sqldatabase_query(self):
-        project_id = 'mitropject'
-        session_factory = self.replay_flight_data('sqldatabase-query', project_id=project_id)
-
-        database_name = 'postgres'
-
-        policy = self.load_policy(
-            {'name': 'all-sql-databases',
-             'resource': 'gcp.sql-database'},
-            session_factory=session_factory)
-
-        databases = policy.run()
-        self.assertEqual(databases[0]['name'], database_name)
-
-    def test_sqldatabase_get(self):
-        project_id = 'mitropject'
-        session_factory = self.replay_flight_data('sqldatabase-get', project_id=project_id)
-
-        database_name = 'postgres'
-        instance_name = 'testpg'
-
-        policy = self.load_policy(
-            {'name': 'one-sql-database',
-             'resource': 'gcp.sql-database'},
-            session_factory=session_factory)
-
-        resource_manager = policy.resource_manager
-
-        database = resource_manager.get_resource(
-            {'project': 'mitropject',
-             'name': database_name,
-             'instance': instance_name})
-
-        annotation_key = resource_manager.resource_type.get_parent_annotation_key()
-
-        self.assertEqual(database['name'], database_name)
-        self.assertEqual(database[annotation_key]['name'], instance_name)
-
-
 class SqlUserTest(BaseTest):
 
     def test_sqluser_query(self):
@@ -178,25 +126,41 @@ class SqlBackupRunTest(BaseTest):
         self.assertEqual(backup_run[parent_annotation_key]['name'], instance_name)
 
     def test_sqlbackuprun_get(self):
-        backup_run_id = '1555592400197'
+        backup_run_id = '1557489381417'
         instance_name = 'custodian-postgres'
         project_id = 'cloud-custodian'
         session_factory = self.replay_flight_data('sqlbackuprun-get', project_id=project_id)
 
         policy = self.load_policy(
+            {'name': 'gcp-sql-backup-run-audit',
+             'resource': 'gcp.sql-backup-run',
+             'mode': {
+                 'type': 'gcp-audit',
+                 'methods': ['cloudsql.backupRuns.create']
+             }},
+            session_factory=session_factory)
+
+        exec_mode = policy.get_execution_mode()
+        event = event_data('sql-backup-create.json')
+        parent_annotation_key = policy.resource_manager.resource_type.get_parent_annotation_key()
+        resources = exec_mode.run(event, None)
+
+        self.assertEqual(resources[0]['id'], backup_run_id)
+        self.assertEqual(resources[0][parent_annotation_key]['name'], instance_name)
+
+    def test_from_insert_time_to_id(self):
+        insert_time = '2019-05-10T11:56:21.417Z'
+        expected_id = 1557489381417
+
+        session_factory = self.replay_flight_data('sqlbackuprun-get')
+        policy = self.load_policy(
             {'name': 'gcp-sql-backup-run-dryrun',
              'resource': 'gcp.sql-backup-run'},
             session_factory=session_factory)
-
         resource_manager = policy.resource_manager
-        backup_run = resource_manager.get_resource(
-            {'project_id': project_id,
-             'backup_run_id': backup_run_id,
-             'database_id': project_id + ':' + instance_name})
-        parent_annotation_key = resource_manager.resource_type.get_parent_annotation_key()
+        actual_id = resource_manager.resource_type._from_insert_time_to_id(insert_time)
 
-        self.assertEqual(backup_run['id'], backup_run_id)
-        self.assertEqual(backup_run[parent_annotation_key]['name'], instance_name)
+        self.assertEqual(actual_id, expected_id)
 
 
 class SqlSslCertTest(BaseTest):
@@ -218,22 +182,24 @@ class SqlSslCertTest(BaseTest):
         self.assertEqual(ssl_cert[parent_annotation_key]['name'], instance_name)
 
     def test_sqlsslcet_get(self):
-        ssl_cert_sha = '62a43e710693b34d5fdb34911a656fd7a3b76cc7'
+        ssl_cert_sha = '49a10ed7135e3171ce5e448cc785bc63b5b81e6c'
         instance_name = 'custodian-postgres'
         project_id = 'cloud-custodian'
         session_factory = self.replay_flight_data('sqlsslcert-get', project_id=project_id)
 
         policy = self.load_policy(
-            {'name': 'gcp-sql-ssl-cert-dryrun',
-             'resource': 'gcp.sql-ssl-cert'},
+            {'name': 'gcp-sql-ssl-cert-audit',
+             'resource': 'gcp.sql-ssl-cert',
+             'mode': {
+                 'type': 'gcp-audit',
+                 'methods': ['cloudsql.sslCerts.create']
+             }},
             session_factory=session_factory)
 
-        resource_manager = policy.resource_manager
-        ssl_cert = resource_manager.get_resource(
-            {'project_id': project_id,
-             'sha_1_fingerprint': ssl_cert_sha,
-             'database_id': project_id + ':' + instance_name})
-        parent_annotation_key = resource_manager.resource_type.get_parent_annotation_key()
+        exec_mode = policy.get_execution_mode()
+        event = event_data('sql-ssl-cert-create.json')
+        parent_annotation_key = policy.resource_manager.resource_type.get_parent_annotation_key()
+        resources = exec_mode.run(event, None)
 
-        self.assertEqual(ssl_cert['sha1Fingerprint'], ssl_cert_sha)
-        self.assertEqual(ssl_cert[parent_annotation_key]['name'], instance_name)
+        self.assertEqual(resources[0]['sha1Fingerprint'], ssl_cert_sha)
+        self.assertEqual(resources[0][parent_annotation_key]['name'], instance_name)

@@ -1,23 +1,12 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 """
 Actions to perform on Azure resources
 """
 import abc
 import logging
+import sys
 
-import six
 from c7n_azure import constants
 from c7n_azure.utils import ThreadHelper
 from msrestazure.azure_exceptions import CloudError
@@ -25,8 +14,7 @@ from msrestazure.azure_exceptions import CloudError
 from c7n.actions import BaseAction, EventAction
 
 
-@six.add_metaclass(abc.ABCMeta)
-class AzureBaseAction(BaseAction):
+class AzureBaseAction(BaseAction, metaclass=abc.ABCMeta):
     session = None
     max_workers = constants.DEFAULT_MAX_THREAD_WORKERS
     chunk_size = constants.DEFAULT_CHUNK_SIZE
@@ -57,17 +45,41 @@ class AzureBaseAction(BaseAction):
             chunk_size=self.chunk_size
         )
 
+    def _log_modified_resource(self, resource, message):
+        if resource.get('type', '').lower() == 'resourcegroups':
+            template = "Action '{action}' modified resource group '{name}'. {message}"
+        else:
+            template = "Action '{action}' modified '{name}' in resource group '{rg}'. {message}"
+
+        name = resource.get('name', 'unknown')
+        rg = resource.get('resourceGroup', 'unknown')
+
+        self.log.info(template.format(action=self.type, name=name, rg=rg, message=message or ''),
+                      extra=self._get_action_log_metadata(resource))
+
+    def _get_action_log_metadata(self, resource):
+        rid = resource.get('id')
+        return {'properties': {'resource_id': rid, 'action': self.type}}
+
     def _process_resources(self, resources, event):
         self._prepare_processing()
 
         for r in resources:
             try:
-                self._process_resource(r)
-            except CloudError as e:
-                self.log.error("Failed to process resource.\n"
-                               "Type: {0}.\n"
-                               "Name: {1}.\n"
-                               "Error: {2}".format(r['type'], r['name'], e))
+                result = self._process_resource(r)
+                self._log_modified_resource(r, result)
+            except Exception as e:
+                # only executes during test runs
+                if "pytest" in sys.modules:
+                    raise e
+                if isinstance(e, CloudError):
+                    self.log.error("{0} failed for '{1}'. {2}".format(
+                        self.type, r['name'], e.message),
+                        extra=self._get_action_log_metadata(r))
+                else:
+                    self.log.exception("{0} failed for '{1}'.".format(
+                        self.type, r['name']),
+                        extra=self._get_action_log_metadata(r))
 
     def _prepare_processing(self):
         pass
@@ -78,20 +90,27 @@ class AzureBaseAction(BaseAction):
             "Base action class does not implement this behavior")
 
 
-@six.add_metaclass(abc.ABCMeta)
-class AzureEventAction(EventAction, AzureBaseAction):
+class AzureEventAction(EventAction, AzureBaseAction, metaclass=abc.ABCMeta):
 
     def _process_resources(self, resources, event):
         self._prepare_processing()
 
         for r in resources:
             try:
-                self._process_resource(r, event)
-            except CloudError as e:
-                self.log.error("Failed to process resource.\n"
-                               "Type: {0}.\n"
-                               "Name: {1}.\n"
-                               "Error: {2}".format(r['type'], r['name'], e))
+                result = self._process_resource(r, event)
+                self._log_modified_resource(r, result)
+            except Exception as e:
+                # only executes during test runs
+                if "pytest" in sys.modules:
+                    raise e
+                if isinstance(e, CloudError):
+                    self.log.error("{0} failed for '{1}'. {2}".format(
+                        self.type, r['name'], e.message),
+                        extra=self._get_action_log_metadata(r))
+                else:
+                    self.log.exception("{0} failed for '{1}'.".format(
+                        self.type, r['name']),
+                        extra=self._get_action_log_metadata(r))
 
     @abc.abstractmethod
     def _process_resource(self, resource, event):

@@ -1,20 +1,5 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-import six
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 from azure.mgmt.resource.policy.models import PolicyAssignment
 from azure.mgmt.resource import SubscriptionClient
@@ -26,17 +11,47 @@ from c7n.manager import ResourceManager
 from c7n.utils import local_session, type_schema
 
 from c7n_azure.provider import resources
-from c7n_azure.query import QueryMeta
+from c7n_azure.query import QueryMeta, TypeInfo
 
 
 @resources.register('subscription')
-@six.add_metaclass(QueryMeta)
-class Subscription(ResourceManager):
+class Subscription(ResourceManager, metaclass=QueryMeta):
+    """Subscription Resource
 
-    class resource_type(object):
+    :example:
+
+    This policy creates Azure Policy scoped to the current subscription if doesn't exist.
+
+    .. code-block:: yaml
+
+        policies:
+          - name: azure-policy-sample
+            resource: azure.subscription
+            filters:
+              - type: missing
+                policy:
+                  resource: azure.policyassignments
+                  filters:
+                    - type: value
+                      key: properties.displayName
+                      op: eq
+                      value_type: normalize
+                      value: dn_sample_policy
+            actions:
+              - type: add-policy
+                name: sample_policy
+                display_name: dn_sample_policy
+                definition_name: "Audit use of classic storage accounts"
+
+    """
+
+    class resource_type(TypeInfo):
+        doc_groups = ['Subscription']
+
         id = 'subscriptionId'
         name = 'displayName'
         filter_name = None
+        service = 'subscription'
 
     def get_model(self):
         return self.resource_type

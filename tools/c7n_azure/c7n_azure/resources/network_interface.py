@@ -1,16 +1,5 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 from c7n_azure import constants
 from c7n_azure.provider import resources
@@ -27,22 +16,59 @@ log = logging.getLogger('custodian.azure.networkinterface')
 
 @resources.register('networkinterface')
 class NetworkInterface(ArmResourceManager):
-    class resource_type(object):
+    """Network Interface Resource
+
+    :example:
+
+    This policy will get Network Interfaces that have `User` added routes.
+
+    .. code-block:: yaml
+
+        policies:
+          - name: get-nic-with-user-routes
+            resource: azure.networkinterface
+            filters:
+              - type: effective-route-table
+                key: routes.value[].source
+                op: in
+                value_type: swap
+                value: User
+
+    """
+
+    class resource_type(ArmResourceManager.resource_type):
+        doc_groups = ['Networking']
+
         service = 'azure.mgmt.network'
         client = 'NetworkManagementClient'
         enum_spec = ('network_interfaces', 'list_all', None)
-        id = 'id'
-        name = 'name'
-        default_report_fields = (
-            'name',
-            'location',
-            'resourceGroup'
-        )
+        resource_type = 'Microsoft.Network/networkInterfaces'
 
 
 @NetworkInterface.filter_registry.register('effective-route-table')
 class EffectiveRouteTableFilter(ValueFilter):
+    """Filters network interfaces by the Effective Route Table
+
+    :example:
+
+    This policy will get Network Interfaces that have VirtualNetworkGateway and VNet hops.
+
+    .. code-block:: yaml
+
+        policies:
+          - name: virtual-network-gateway-hop
+            resource: azure.networkinterface
+            filters:
+              - type: effective-route-table
+                key: routes.value[?source == 'User'].nextHopType
+                op: difference
+                value:
+                  - Internet
+                  - None
+                  - VirtualAppliance
+    """
     schema = type_schema('effective-route-table', rinherit=ValueFilter.schema)
+    schema_alias = False
 
     def process(self, resources, event=None):
 

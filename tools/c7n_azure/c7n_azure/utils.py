@@ -1,45 +1,45 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import collections
 import datetime
 import enum
 import hashlib
-import isodate
+import itertools
 import logging
+import random
 import re
 import time
 import uuid
+from concurrent.futures import as_completed
 
-import six
-from azure.graphrbac.models import GetObjectsParameters, DirectoryObject
+from azure.graphrbac.models import DirectoryObject, GetObjectsParameters
+from azure.keyvault import KeyVaultAuthentication, AccessToken
+from azure.keyvault import KeyVaultClient, KeyVaultId
 from azure.mgmt.managementgroups import ManagementGroupsAPI
 from azure.mgmt.web.models import NameValuePair
 from c7n_azure import constants
-from concurrent.futures import as_completed
+from msrestazure.azure_active_directory import MSIAuthentication
 from msrestazure.azure_exceptions import CloudError
 from msrestazure.tools import parse_resource_id
-from netaddr import IPNetwork, IPRange
+from msrestazure.azure_cloud import AZURE_PUBLIC_CLOUD
+from netaddr import IPNetwork, IPRange, IPSet
+from json import JSONEncoder
 
-from c7n.utils import chunks
-from c7n.utils import local_session
+from c7n.utils import chunks, local_session
+
+from functools import lru_cache
 
 
-class ResourceIdParser(object):
+resource_group_regex = re.compile(r'/subscriptions/[^/]+/resourceGroups/[^/]+(/)?$',
+                                  re.IGNORECASE)
+
+
+class ResourceIdParser:
 
     @staticmethod
     def get_namespace(resource_id):
-        return parse_resource_id(resource_id).get('namespace')
+        parsed = parse_resource_id(resource_id)
+        return parsed.get('namespace')
 
     @staticmethod
     def get_subscription_id(resource_id):
@@ -67,12 +67,25 @@ class ResourceIdParser(object):
     def get_resource_name(resource_id):
         return parse_resource_id(resource_id).get('resource_name')
 
+    @staticmethod
+    def get_full_type(resource_id):
+        return '/'.join([ResourceIdParser.get_namespace(resource_id),
+                         ResourceIdParser.get_resource_type(resource_id)])
 
-class StringUtils(object):
+
+def is_resource_group_id(rid):
+    return resource_group_regex.match(rid)
+
+
+def is_resource_group(resource):
+    return resource['type'] == constants.RESOURCE_GROUPS_TYPE
+
+
+class StringUtils:
 
     @staticmethod
     def equal(a, b, case_insensitive=True):
-        if isinstance(a, six.string_types) and isinstance(b, six.string_types):
+        if isinstance(a, str) and isinstance(b, str):
             if case_insensitive:
                 return a.strip().lower() == b.strip().lower()
             else:
@@ -87,7 +100,7 @@ class StringUtils(object):
 
     @staticmethod
     def naming_hash(val, length=8):
-        if isinstance(val, six.string_types):
+        if isinstance(val, str):
             val = val.encode('utf8')
         return hashlib.sha256(val).hexdigest().lower()[:length]
 
@@ -125,13 +138,17 @@ def custodian_azure_send_override(self, request, headers=None, content=None, **k
                 send_logger.debug(k + ':' + v)
 
         # Retry codes from urllib3/util/retry.py
-        if response.status_code in [413, 429, 503]:
+        if response.status_code in [429, 503]:
             retry_after = None
             for k in response.headers.keys():
                 if StringUtils.equal('retry-after', k):
                     retry_after = int(response.headers[k])
-
-            if retry_after is not None and retry_after < constants.DEFAULT_MAX_RETRY_AFTER:
+            if retry_after is None:
+                # we want to attempt retries even when azure fails to send a header
+                # this has been a constant source of instability in larger environments
+                retry_after = (constants.DEFAULT_RETRY_AFTER * retries) + \
+                    random.randint(1, constants.DEFAULT_RETRY_AFTER)
+            if retry_after < constants.DEFAULT_MAX_RETRY_AFTER:
                 send_logger.warning('Received retriable error code %i. Retry-After: %i'
                                     % (response.status_code, retry_after))
                 time.sleep(retry_after)
@@ -153,14 +170,15 @@ class ThreadHelper:
     @staticmethod
     def execute_in_parallel(resources, event, execution_method, executor_factory, log,
                             max_workers=constants.DEFAULT_MAX_THREAD_WORKERS,
-                            chunk_size=constants.DEFAULT_CHUNK_SIZE):
+                            chunk_size=constants.DEFAULT_CHUNK_SIZE,
+                            **kwargs):
         futures = []
         results = []
         exceptions = []
 
         if ThreadHelper.disable_multi_threading:
             try:
-                result = execution_method(resources, event)
+                result = execution_method(resources, event, **kwargs)
                 if result:
                     results.extend(result)
             except Exception as e:
@@ -168,7 +186,7 @@ class ThreadHelper:
         else:
             with executor_factory(max_workers=max_workers) as w:
                 for resource_set in chunks(resources, chunk_size):
-                    futures.append(w.submit(execution_method, resource_set, event))
+                    futures.append(w.submit(execution_method, resource_set, event, **kwargs))
 
                 for f in as_completed(futures):
                     if f.exception():
@@ -183,7 +201,7 @@ class ThreadHelper:
         return results, list(set(exceptions))
 
 
-class Math(object):
+class Math:
 
     @staticmethod
     def mean(numbers):
@@ -195,8 +213,18 @@ class Math(object):
         clean_numbers = [e for e in numbers if e is not None]
         return float(sum(clean_numbers))
 
+    @staticmethod
+    def max(numbers):
+        clean_numbers = [e for e in numbers if e is not None]
+        return float(max(clean_numbers))
 
-class GraphHelper(object):
+    @staticmethod
+    def min(numbers):
+        clean_numbers = [e for e in numbers if e is not None]
+        return float(min(clean_numbers))
+
+
+class GraphHelper:
     log = logging.getLogger('custodian.azure.utils.GraphHelper')
 
     @staticmethod
@@ -254,7 +282,7 @@ class GraphHelper(object):
         return ''
 
 
-class PortsRangeHelper(object):
+class PortsRangeHelper:
 
     PortsRange = collections.namedtuple('PortsRange', 'start end')
 
@@ -296,7 +324,7 @@ class PortsRangeHelper(object):
         """ Converts array of port ranges to the set of integers
             Example: [(10-12), (20,20)] -> {10, 11, 12, 20}
         """
-        return set([i for r in ranges for i in range(r.start, r.end + 1)])
+        return {i for r in ranges for i in range(r.start, r.end + 1)}
 
     @staticmethod
     def validate_ports_string(ports):
@@ -352,7 +380,14 @@ class PortsRangeHelper(object):
         return result
 
     @staticmethod
-    def build_ports_dict(nsg, direction_key, ip_protocol):
+    def check_address(target_address, address_set, address):
+        if not target_address:
+            return True
+        return target_address in address_set or target_address == address
+
+    @staticmethod
+    def build_ports_dict(nsg, direction_key, ip_protocol,
+                         source_address=None, destination_address=None):
         """ Build entire ports array filled with True (Allow), False (Deny) and None(default - Deny)
             based on the provided Network Security Group object, direction and protocol.
         """
@@ -373,6 +408,18 @@ class PortsRangeHelper(object):
                not StringUtils.equal(protocol, ip_protocol):
                 continue
 
+            if not PortsRangeHelper.check_address(
+                    source_address,
+                    rule['properties'].get('sourceAddressPrefixes'),
+                    rule['properties'].get('sourceAddressPrefix')):
+                continue
+
+            if not PortsRangeHelper.check_address(
+                    destination_address,
+                    rule['properties'].get('destinationAddressPrefixes'),
+                    rule['properties'].get('destinationAddressPrefix')):
+                continue
+
             IsAllowed = StringUtils.equal(rule['properties']['access'], 'allow')
             ports_set = PortsRangeHelper.get_ports_set_from_rule(rule)
 
@@ -383,7 +430,7 @@ class PortsRangeHelper(object):
         return ports
 
 
-class IpRangeHelper(object):
+class IpRangeHelper:
 
     @staticmethod
     def parse_ip_ranges(data, key):
@@ -398,15 +445,19 @@ class IpRangeHelper(object):
             return None
 
         ranges = [[s.strip() for s in r.split('-')] for r in data[key]]
-        result = set()
+        result = IPSet()
         for r in ranges:
-            if len(r) > 2:
-                raise Exception('Invalid range. Use x.x.x.x-y.y.y.y or x.x.x.x or x.x.x.x/y.')
-            result.add(IPRange(*r) if len(r) == 2 else IPNetwork(r[0]))
+            resolved_set = resolve_service_tag_alias(r[0])
+            if resolved_set is not None:
+                result.update(resolved_set)
+            else:
+                if len(r) > 2:
+                    raise Exception('Invalid range. Use x.x.x.x-y.y.y.y or x.x.x.x or x.x.x.x/y.')
+                result.add(IPRange(*r) if len(r) == 2 else IPNetwork(r[0]))
         return result
 
 
-class AppInsightsHelper(object):
+class AppInsightsHelper:
     log = logging.getLogger('custodian.azure.utils.AppInsightsHelper')
 
     @staticmethod
@@ -423,7 +474,7 @@ class AppInsightsHelper(object):
 
     @staticmethod
     def _get_instrumentation_key(resource_group_name, resource_name):
-        from .session import Session
+        from c7n_azure.session import Session
         s = local_session(Session)
         client = s.client('azure.mgmt.applicationinsights.ApplicationInsightsManagementClient')
         try:
@@ -436,21 +487,41 @@ class AppInsightsHelper(object):
             return ''
 
 
-class ManagedGroupHelper(object):
+class ManagedGroupHelper:
+    class serialize(JSONEncoder):
+        def default(self, o):
+            return o.__dict__
+
+    @staticmethod
+    def filter_subscriptions(key, dictionary):
+        for k, v in dictionary.items():
+            if k == key:
+                if v == '/subscriptions':
+                    yield dictionary
+            elif isinstance(v, dict):
+                for result in ManagedGroupHelper.filter_subscriptions(key, v):
+                    yield result
+            elif isinstance(v, list):
+                for d in v:
+                    for result in ManagedGroupHelper.filter_subscriptions(key, d):
+                        yield result
 
     @staticmethod
     def get_subscriptions_list(managed_resource_group, credentials):
         client = ManagementGroupsAPI(credentials)
-        entities = client.entities.list(filter='name eq \'%s\'' % managed_resource_group)
-
-        return [e.name for e in entities if e.type == '/subscriptions']
+        groups = client.management_groups.get(
+            group_id=managed_resource_group, recurse=True,
+            expand="children").serialize()["properties"]
+        subscriptions = ManagedGroupHelper.filter_subscriptions('type', groups)
+        subscriptions = [subscription['name'] for subscription in subscriptions]
+        return subscriptions
 
 
 def generate_key_vault_url(name):
     return constants.TEMPLATE_KEYVAULT_URL.format(name)
 
 
-class RetentionPeriod(object):
+class RetentionPeriod:
 
     PATTERN = re.compile("^P([1-9][0-9]*)([DWMY])$")
 
@@ -473,10 +544,9 @@ class RetentionPeriod(object):
             return self.str_value
 
     @staticmethod
-    def duration_from_period_and_units(period, retention_period_unit):
+    def iso8601_duration(period, retention_period_unit):
         iso8601_str = "P{}{}".format(period, retention_period_unit.iso8601_symbol)
-        duration = isodate.parse_duration(iso8601_str)
-        return duration
+        return iso8601_str
 
     @staticmethod
     def parse_iso8601_retention_period(iso8601_retention_period):
@@ -493,3 +563,66 @@ class RetentionPeriod(object):
         units = next(units for units in RetentionPeriod.Units
             if units.iso8601_symbol == iso8601_symbol)
         return period, units
+
+
+@lru_cache()
+def get_keyvault_secret(user_identity_id, keyvault_secret_id, cloud_endpoints=AZURE_PUBLIC_CLOUD):
+    secret_id = KeyVaultId.parse_secret_id(keyvault_secret_id)
+    access_token = None
+
+    resource = get_keyvault_auth_endpoint(cloud_endpoints)
+    # Use UAI if client_id is provided
+    if user_identity_id:
+        msi = MSIAuthentication(
+            client_id=user_identity_id,
+            resource=resource)
+    else:
+        msi = MSIAuthentication(
+            resource=resource)
+
+    access_token = AccessToken(token=msi.token['access_token'])
+    credentials = KeyVaultAuthentication(lambda _1, _2, _3: access_token)
+
+    kv_client = KeyVaultClient(credentials)
+    return kv_client.get_secret(secret_id.vault, secret_id.name, secret_id.version).value
+
+
+@lru_cache()
+def get_service_tag_list():
+    """ Gets service tags, note that the region passed to the API
+    doesn't seem to do anything, so we use a fixed one to improve caching"""
+
+    from c7n_azure.session import Session
+    s = local_session(Session)  # type: Session
+
+    client = s.client('azure.mgmt.network._network_management_client.NetworkManagementClient')
+
+    return client.service_tags.list('westus')
+
+
+def get_service_tag_ip_space(resource_name='AzureCloud', region=None):
+    """ Gets service tags, optionally filtered by resource name and region.
+    Note that the region passed to the API doesn't seem to do anything, but
+    you have to provide one.  Filtering is done on the result set."""
+
+    tags = get_service_tag_list()
+
+    name_filter = resource_name.lower()
+    if region:
+        name_filter += '.' + region.lower()
+
+    ip_lists = [v.properties.address_prefixes for v in tags.values if name_filter == v.name.lower()]
+
+    return list(itertools.chain.from_iterable(ip_lists))
+
+
+def resolve_service_tag_alias(rule):
+    if rule.lower().startswith('servicetags'):
+        p = rule.split('.')
+        resource_name = p[1] if 1 < len(p) else None
+        resource_region = p[2] if 2 < len(p) else None
+        return IPSet(get_service_tag_ip_space(resource_name, resource_region))
+
+
+def get_keyvault_auth_endpoint(cloud_endpoints):
+    return 'https://{0}'.format(cloud_endpoints.suffixes.keyvault_dns[1:])

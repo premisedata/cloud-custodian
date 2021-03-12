@@ -1,39 +1,24 @@
-# Copyright 2015-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 from c7n.manager import resources
-from c7n.query import QueryResourceManager
+from c7n.query import QueryResourceManager, TypeInfo
 from c7n.utils import local_session
 from c7n.filters.vpc import SecurityGroupFilter, SubnetFilter, VpcFilter
-from c7n.tags import Tag, RemoveTag, universal_augment
+from c7n.tags import Tag, RemoveTag, universal_augment, TagDelayedAction, TagActionFilter
 
 
 @resources.register('directory')
 class Directory(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = "ds"
         enum_spec = ("describe_directories", "DirectoryDescriptions", None)
         name = "Name"
         id = "DirectoryId"
-        dimension = None
         filter_name = 'DirectoryIds'
         filter_type = 'list'
-        type = "directory"
-
-    permissions = ('ds:ListTagsForResource',)
+        arn_type = "directory"
+        permission_augment = ('ds:ListTagsForResource',)
 
     def augment(self, directories):
         client = local_session(self.session_factory).client('ds')
@@ -70,7 +55,7 @@ class DirectoryTag(Tag):
 
     :example:
 
-        .. code-block: yaml
+        .. code-block:: yaml
 
             policies:
               - name: tag-directory
@@ -82,7 +67,7 @@ class DirectoryTag(Tag):
                     key: desired-tag
                     value: desired-value
     """
-    permissions = ('ds:AddTagToResource',)
+    permissions = ('ds:AddTagsToResource',)
 
     def process_resource_set(self, client, directories, tags):
         for d in directories:
@@ -99,7 +84,7 @@ class DirectoryRemoveTag(RemoveTag):
 
     :example:
 
-        .. code-block: yaml
+        .. code-block:: yaml
 
             policies:
               - name: remove-directory-tag
@@ -121,17 +106,19 @@ class DirectoryRemoveTag(RemoveTag):
                 continue
 
 
+Directory.filter_registry.register('marked-for-op', TagActionFilter)
+Directory.action_registry.register('mark-for-op', TagDelayedAction)
+
+
 @resources.register('cloud-directory')
 class CloudDirectory(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = "clouddirectory"
         enum_spec = ("list_directories", "Directories", {'state': 'ENABLED'})
         arn = id = "DirectoryArn"
         name = "Name"
-        dimension = None
-        filter_name = None
-        type = "directory"
+        arn_type = "directory"
         universal_taggable = object()
 
     augment = universal_augment

@@ -1,21 +1,9 @@
-# Copyright 2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 from c7n.manager import resources
-from c7n.query import QueryResourceManager
-from c7n.actions import ActionRegistry, BaseAction
-from c7n.filters import FilterRegistry
+from c7n.query import QueryResourceManager, TypeInfo
+from c7n.actions import BaseAction
 from c7n.tags import Tag, TagDelayedAction, RemoveTag, coalesce_copy_user_tags, TagActionFilter
 from c7n.utils import local_session, type_schema
 from c7n.filters.kms import KmsRelatedFilter
@@ -23,32 +11,25 @@ from c7n.filters.kms import KmsRelatedFilter
 
 @resources.register('fsx')
 class FSx(QueryResourceManager):
-    filter_registry = FilterRegistry('fsx.filters')
-    action_registry = ActionRegistry('fsx.actions')
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'fsx'
         enum_spec = ('describe_file_systems', 'FileSystems', None)
         name = id = 'FileSystemId'
         arn = "ResourceARN"
         date = 'CreationTime'
-        dimension = None
-        filter_name = None
+        cfn_type = 'AWS::FSx::FileSystem'
 
 
 @resources.register('fsx-backup')
 class FSxBackup(QueryResourceManager):
-    filter_registry = FilterRegistry('fsx-baackup.filters')
-    action_registry = ActionRegistry('fsx-baackup.actions')
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'fsx'
         enum_spec = ('describe_backups', 'Backups', None)
         name = id = 'BackupId'
         arn = "ResourceARN"
         date = 'CreationTime'
-        dimension = None
-        filter_name = None
 
 
 @FSxBackup.action_registry.register('delete')
@@ -58,7 +39,7 @@ class DeleteBackup(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
             - name: delete-backups
@@ -129,7 +110,7 @@ class UpdateFileSystem(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
             - name: update-fsx-resource
@@ -172,7 +153,7 @@ class BackupFileSystem(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
             - name: backup-fsx-resource
@@ -253,7 +234,7 @@ class DeleteFileSystem(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
             - name: delete-fsx-instance-with-snapshot

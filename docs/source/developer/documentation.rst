@@ -14,13 +14,14 @@ Find the Documentation
 ----------------------
 
 The root of the documentation is located in the ``docs`` directory.
-Within the documentation, topics are organized according into the following main areas:
+Within the documentation, topics are organized according to the following main areas:
 
-* Overview
-* Quickstart
-* AWS
-* Azure
-* Developer
+* :doc:`Overview <../index>`
+* :ref:`Quickstart <quickstart>`
+* :ref:`AWS <aws-gettingstarted>`
+* :ref:`Azure <azure_gettingstarted>`
+* :ref:`GCP <gcp_gettingstarted>`
+* :ref:`Developer <developer>`
 
 In addition, the api documentation will be built from docstrings on classes and methods in source code.
 The ``rst`` files for these may be found in the ``generated`` subdirectory.
@@ -90,3 +91,12 @@ To do so, use the following command:
 .. code-block::
 
     $ make -f docs/Makefile.sphinx html
+
+
+You can also build documentation via the provided tox dockerfile.  You will need to build and
+run from the root of your source enlistment each time you edit documentation files:
+
+.. code-block::
+
+    $ docker build -t tox_linux --build-arg TOX_ENV=docs . -f tools/dev/docker_tox_linux/Dockerfile
+    $ docker run -v 'pwd'/docs/build:/src/docs/build -it tox_linux

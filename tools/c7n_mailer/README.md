@@ -31,7 +31,7 @@ and run a policy that triggers an email to your inbox.
 4. In AWS, locate or create a role that has read access to the queue. Grab the
    role ARN and set it as `role` in `mailer.yml`.
 
-there is different notification endpoints options, you can combine both.
+There are different notification endpoints options, you can combine both.
 
 ### Email:
 Make sure your email address is verified in SES, and set it as
@@ -49,7 +49,13 @@ role: arn:aws:iam::123456790:role/c7n-mailer-test
 from_address: you@example.com
 ```
 
-(Also set `region` if you are in a region other than `us-east-1`.)
+You can also set `region` if you are in a region other than `us-east-1` as well as `lambda_tags` to give the mailer tags.
+
+```yaml
+region: us-east-2
+lambda_tags:
+  owner: ops
+```
 
 Now let's make a Custodian policy to populate your mailer queue. Create a
 `test-policy.yml` file with this content (update `to` and `queue` to match your
@@ -139,6 +145,7 @@ policies:
     actions:
       - type: notify
         slack_template: slack
+        slack_msg_color: danger
         to:
           - slack://owners
           - slack://foo@bar.com
@@ -154,6 +161,16 @@ policies:
 Slack messages support use of a unique template field specified by `slack_template`. This field is unique and usage will not break
 existing functionality for messages also specifying an email template in the `template` field. This field is optional, however,
 and if not specified, the mailer will use the default value `slack_default`.
+
+The unique template field `slack_msg_color` can be used to specify a color
+border for the slack message. This accepts the Slack presets of `danger` (red),
+`warning` (yellow) and `good` (green). It can also accept a HTML hex code. See
+the [Slack documentation](https://api.slack.com/reference/messaging/attachments#fields)
+for details.
+
+Note: if you are using a hex color code it will need to be wrapped in quotes
+like so: `slack_msg_color: '#4287f51'`. Otherwise the YAML interpreter will consider it a
+[comment](https://yaml.org/spec/1.2/spec.html#id2780069).
 
 Slack integration for the mailer supports several flavors of messaging, listed below. These are not mutually exclusive and any combination of the types can be used, but the preferred method is [incoming webhooks](https://api.slack.com/incoming-webhooks).
 
@@ -251,13 +268,8 @@ and here is a description of the options:
 |:---------:|:----------------|:-----------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | &#x2705;  | `queue_url`     | string           | the queue to listen to for messages                                                                                                                                                 |
 |           | `from_address`  | string           | default from address                                                                                                                                                                |
+|           | `endpoint_url`  | string           | SQS API URL (for use with VPC Endpoints)                                                                                                                                                                |
 |           | `contact_tags`  | array of strings | tags that we should look at for address information                                                                                                                                 |
-|           | `smtp_server`   | string           | if this is unset, aws ses is used by default. To configure your lambda role to talk to smtpd in your private vpc, see [here](https://docs.aws.amazon.com/lambda/latest/dg/vpc.html) |
-|           | `smtp_port`     | integer          | smtp port                                                                                                                                                                           |
-|           | `smtp_ssl`      | boolean          | this defaults to True                                                                                                                                                               |
-|           | `smtp_username` | string           |                                                                                                                                                                                     |
-|           | `smtp_password` | string           |                                                                                                                                                                                     |
-
 
 #### Standard Lambda Function Config
 
@@ -277,12 +289,12 @@ and here is a description of the options:
 | Required? | Key                   | Type   | Notes                                                                                  |
 |:---------:|:----------------------|:-------|:---------------------------------------------------------------------------------------|
 |           | `function_properties` | object | Contains `appInsights`, `storageAccount` and `servicePlan` objects                     |
-|           | `appInsights`         | object | Contains `name`, `location` and `resource_group_name` properties                       |
-|           | `storageAccount`      | object | Contains `name`, `location` and `resource_group_name` properties                       |
-|           | `servicePlan`         | object | Contains `name`, `location`, `resource_group_name`, `skuTier` and `skuName` properties |
+|           | `appInsights`         | object | Contains `name`, `location` and `resourceGroupName` properties                       |
+|           | `storageAccount`      | object | Contains `name`, `location` and `resourceGroupName` properties                       |
+|           | `servicePlan`         | object | Contains `name`, `location`, `resourceGroupName`, `skuTier` and `skuName` properties |
 |           | `name`                | string |                                                                                        |
 |           | `location`            | string | Default: `west us 2`                                                                   |
-|           | `resource_group_name` | string | Default `cloud-custodian`                                                              |
+|           | `resourceGroupName`   | string | Default `cloud-custodian`                                                              |
 |           | `skuTier`             | string | Default: `Basic`                                                                       |
 |           | `skuName`             | string | Default: `B1`                                                                          |
 
@@ -311,6 +323,17 @@ and here is a description of the options:
 |           | `redis_port`                | integer | redis port, default: 6369                                                                                                                                                                          |
 |           | `ses_region`                | string  | AWS region that handles SES API calls                                                                                                                                                              |
 
+#### SMTP Config
+
+| Required? | Key             | Type             | Notes                                                                                                                                                                               |
+|:---------:|:----------------|:-----------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+|           | `smtp_server`   | string           | to configure your lambda role to talk to smtpd in your private vpc, see [here](https://docs.aws.amazon.com/lambda/latest/dg/vpc.html) |                                             |
+|           | `smtp_port`     | integer          | smtp port (default is 25)                                                                                                                                                           |
+|           | `smtp_ssl`      | boolean          | this defaults to True                                                                                                                                                               |
+|           | `smtp_username` | string           |                                                                                                                                                                                     |
+|           | `smtp_password` | secured string   |                                                                                                                                                                                     |
+
+If `smtp_server` is unset, `c7n_mailer` will use AWS SES or Azure SendGrid.
 
 #### DataDog Config
 
@@ -329,10 +352,10 @@ These fields are not necessary if c7n_mailer is run in a instance/lambda/etc wit
 
 #### SendGrid Config
 
-| Required? | Key                | Type   | Notes              |
-|:---------:|:-------------------|:-------|:-------------------|
-|           | `sendgrid_api_key` | string | SendGrid API token |
-SendGrid is only supported for Azure Cloud use with Azure Storage Queue currently.
+| Required? | Key                | Type           | Notes              |
+|:---------:|:-------------------|:---------------|:-------------------|
+|           | `sendgrid_api_key` | secured string | SendGrid API token |
+
 
 #### Splunk HEC Config
 
@@ -346,6 +369,7 @@ The following configuration items are *all* optional. The ones marked "Required 
 |                      | `splunk_actions_list`   | boolean          | If true, add an `actions` list to the top-level message sent to Splunk, containing the names of all non-notify actions taken       |
 |                      | `splunk_max_attempts`   | integer          | Maximum number of times to try POSTing data to Splunk HEC (default 4)                                                              |
 |                      | `splunk_hec_max_length` | integer          | Maximum data length that Splunk HEC accepts; an error will be logged for any message sent over this length                         |
+|                      | `splunk_hec_sourcetype` | string       | Configure sourcetype of the payload sent to Splunk HEC. (default is '_json')                         |
 
 #### SDK Config
 
@@ -355,6 +379,34 @@ The following configuration items are *all* optional. The ones marked "Required 
 |           | `https_proxy` | string |       |
 |           | `profile`     | string |       |
 
+
+#### Secured String
+
+In order to ensure sensitive data is not stored plaintext in a policy, `c7n-mailer` supports secured
+strings. You can treat it as a regular `string` or use `secured string` features.
+
+##### AWS
+
+You can use KMS to encrypt your secrets and use encrypted secret in mailer policy.
+Custodian tries to decrypt the string using KMS, if it fails c7n treats it as a plaintext secret.
+
+```yaml
+    plaintext_secret: <raw_secret>
+    secured_string: <encrypted_secret>
+```
+
+##### Azure
+
+You can store your secrets in Azure Key Vault secrets and reference them from the policy.
+
+```yaml
+    plaintext_secret: <raw_secret>
+    secured_string:
+        type: azure.keyvault
+        secret: https://your-vault.vault.azure.net/secrets/your-secret
+```
+
+Note: `secrets.get` permission on the KeyVault for the Service Principal is required.
 
 ## Configuring a policy to send email
 
@@ -404,6 +456,14 @@ The optional `owner_absent_contact` list specifies email addresses to notify onl
 the `resource-owner` special option was unable to find any matching owner contact
 tags.
 
+In addition, you may choose to use a custom tag instead of the default `OwnerContact`.  In order to configure this, the mailer.yaml must be modified to include the contact_tags and the custom tag.  The `resource-owner` will now email the custom tag instead of `OwnerContact`.
+
+```yaml
+contact_tags:
+  - "custom_tag"
+```
+
+
 For reference purposes, the JSON Schema of the `notify` action:
 
 ```json
@@ -441,7 +501,7 @@ Requires:
 The mailer supports an Azure Storage Queue transport and SendGrid delivery on Azure.
 Configuration for this scenario requires only minor changes from AWS deployments.
 
-You will need to grant `Queue Data Contributor` role on the Queue for the identity
+You will need to grant `Storage Queue Data Contributor` role on the Queue for the identity
 mailer is running under.
 
 The notify action in your policy will reflect transport type `asq` with the URL
@@ -477,6 +537,16 @@ The mailer will transmit all messages found on the queue on each execution, and 
 sending 3 times in the event of a failure calling SendGrid.  After the retries the queue
 message will be discarded.
 
+In addition, SendGrid delivery on Azure supports using resource tags to send emails. For example, in the `to` field:
+
+```yaml
+to:
+  - tag:OwnerEmail
+```
+
+This will find the email address associated with the resource's `OwnerEmail` tag, and send an email to the specified address.
+If no tag is found, or the associated email address is invalid, no email will be sent.
+
 #### Deploying Azure Functions
 
 The `--update-lambda` CLI option will also deploy Azure Functions if you have an Azure
@@ -493,6 +563,40 @@ sendgrid_api_key: <key>
 function_properties:
   servicePlan:
     name: 'testmailer1'
+```
+
+#### Configuring Function Identity
+
+You can configure the service principal used for api calls made by the
+mailer azure function by specifying an identity configuration under
+function properties. Mailer supports User Assigned Identities, System
+Managed Identities, defaulting to an embedding of the cli user's
+service principals credentials.
+
+When specifying a user assigned identity, unlike in a custodian
+function policy where simply providing an name is sufficient, the
+uuid/id and client id of the identity must be provided. You can
+retrieve this information on the cli using the `az identity list`.
+
+```yaml
+
+function_properties:
+  identity:
+    type: UserAssigned
+    id: "/subscriptions/333fd504-7f11-2270-88c8-7325a27f7222/resourcegroups/c7n/providers/Microsoft.ManagedIdentity/userAssignedIdentities/mailer"
+    client_id: "b9cb06fa-dfb8-4342-add3-aab5acb2abbc"
+```
+
+A system managed identity can also be used, and the Azure platform will
+create an identity when the function is provisoned, however the function's identity
+then needs to be retrieved and mapped to rbac permissions post provisioning, this
+user management activity must be performed manually.
+
+```yaml
+
+function_properties:
+  identity:
+    type: SystemAssigned
 ```
 
 ## Writing an email template
@@ -526,7 +630,7 @@ The following extra global functions are available:
 | `resource_tag(resource, key)`                                                | retrieve a tag value from a resource or return an empty string, aliased as get_resource_tag_value |
 | `format_resource(resource, resource_type)`                                   | renders a one line summary of a resource                                                          |
 | `date_time_format(utc_str, tz_str='US/Eastern', format='%Y %b %d %H:%M %Z')` | customize rendering of an utc datetime string                                                     |
-| `seach(expression, value)`                                                   | jmespath search value using expression                                                            |
+| `search(expression, value)`                                                  | jmespath search value using expression                                                            |
 | `yaml_safe(value)`                                                           | yaml dumper                                                                                       |
 
 The following extra jinja filters are available:
@@ -572,3 +676,26 @@ the message file to be base64-encoded, gzipped JSON, just like c7n sends to SQS.
   receive mail, and print the rendered message body template to STDOUT.
 * With the ``-d`` | ``--dry-run`` argument, it will print the actual email body (including headers)
   that would be sent, for each message that would be sent, to STDOUT.
+
+#### Testing Templates for Azure
+
+The ``c7n-mailer-replay`` entrypoint can be used to test templates for Azure with either of the arguments:
+* ``-T`` | ``--template-print``
+* ``-d`` | ``--dry-run``
+
+Running ``c7n-mailer-replay`` without either of these arguments will throw an error as it will attempt
+to authorize with AWS.
+
+The following is an example for retrieving a sample message to test against templates:
+
+* Run a policy with the notify action, providing the name of the template to test, to populate the queue.
+
+* Using the azure cli, save the message locally:
+```
+$ az storage message get --queue-name <queuename> --account-name <storageaccountname> --query '[].content' > test_message.gz
+```
+* The example message can be provided to ``c7n-mailer-replay`` by running:
+
+```
+$ c7n-mailer-replay test_message.gz -T --config mailer.yml
+```

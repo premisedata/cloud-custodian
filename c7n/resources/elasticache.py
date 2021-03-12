@@ -1,23 +1,7 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
-import functools
-import logging
-import re
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 from datetime import datetime
+import re
 
 from concurrent.futures import as_completed
 from dateutil.tz import tzutc
@@ -27,14 +11,12 @@ from c7n.actions import (
     ActionRegistry, BaseAction, ModifyVpcSecurityGroupsAction)
 from c7n.filters import FilterRegistry, AgeFilter
 import c7n.filters.vpc as net_filters
+from c7n.filters.kms import KmsRelatedFilter
 from c7n.manager import resources
-from c7n.query import QueryResourceManager
+from c7n.query import QueryResourceManager, TypeInfo
 from c7n.tags import universal_augment
 from c7n.utils import (
-    local_session, generate_arn,
-    get_retry, chunks, snapshot_identifier, type_schema)
-
-log = logging.getLogger('custodian.elasticache')
+    local_session, chunks, snapshot_identifier, type_schema)
 
 filters = FilterRegistry('elasticache.filters')
 actions = ActionRegistry('elasticache.actions')
@@ -45,9 +27,10 @@ TTYPE = re.compile('cache.t1')
 @resources.register('cache-cluster')
 class ElastiCacheCluster(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'elasticache'
-        type = 'cluster'
+        arn_type = 'cluster'
+        arn_separator = ":"
         enum_spec = ('describe_cache_clusters',
                      'CacheClusters[]', None)
         name = id = 'CacheClusterId'
@@ -56,25 +39,12 @@ class ElastiCacheCluster(QueryResourceManager):
         date = 'CacheClusterCreateTime'
         dimension = 'CacheClusterId'
         universal_taggable = True
+        cfn_type = 'AWS::ElastiCache::CacheCluster'
 
     filter_registry = filters
     action_registry = actions
-    _generate_arn = None
-    retry = staticmethod(get_retry(('Throttled',)))
     permissions = ('elasticache:ListTagsForResource',)
     augment = universal_augment
-
-    @property
-    def generate_arn(self):
-        if self._generate_arn is None:
-            self._generate_arn = functools.partial(
-                generate_arn,
-                'elasticache',
-                region=self.config.region,
-                account_id=self.account_id,
-                resource_type='cluster',
-                separator=':')
-        return self._generate_arn
 
 
 @filters.register('security-group')
@@ -276,50 +246,35 @@ class ElasticacheClusterModifyVpcSecurityGroups(ModifyVpcSecurityGroupsAction):
 @resources.register('cache-subnet-group')
 class ElastiCacheSubnetGroup(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'elasticache'
-        type = 'subnet-group'
+        arn_type = 'subnet-group'
         enum_spec = ('describe_cache_subnet_groups',
                      'CacheSubnetGroups', None)
         name = id = 'CacheSubnetGroupName'
         filter_name = 'CacheSubnetGroupName'
         filter_type = 'scalar'
-        date = None
-        dimension = None
+        cfn_type = 'AWS::ElastiCache::SubnetGroup'
 
 
 @resources.register('cache-snapshot')
 class ElastiCacheSnapshot(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'elasticache'
-        type = 'snapshot'
+        arn_type = 'snapshot'
+        arn_separator = ":"
         enum_spec = ('describe_snapshots', 'Snapshots', None)
         name = id = 'SnapshotName'
         filter_name = 'SnapshotName'
         filter_type = 'scalar'
         date = 'StartTime'
-        dimension = None
         universal_taggable = True
 
     permissions = ('elasticache:ListTagsForResource',)
-    filter_registry = FilterRegistry('elasticache-snapshot.filters')
-    action_registry = ActionRegistry('elasticache-snapshot.actions')
-    _generate_arn = None
-    retry = staticmethod(get_retry(('Throttled',)))
-    augment = universal_augment
 
-    @property
-    def generate_arn(self):
-        if self._generate_arn is None:
-            self._generate_arn = functools.partial(
-                generate_arn,
-                'elasticache',
-                region=self.config.region,
-                account_id=self.account_id,
-                resource_type='snapshot',
-                separator=':')
-        return self._generate_arn
+    def augment(self, resources):
+        return universal_augment(self, resources)
 
 
 @ElastiCacheSnapshot.filter_registry.register('age')
@@ -372,7 +327,7 @@ class DeleteElastiCacheSnapshot(BaseAction):
     .. code-block:: yaml
 
             policies:
-              - name: elasticache-stale-snapshots
+              - name: delete-elasticache-stale-snapshots
                 resource: cache-snapshot
                 filters:
                   - type: age
@@ -386,7 +341,7 @@ class DeleteElastiCacheSnapshot(BaseAction):
     permissions = ('elasticache:DeleteSnapshot',)
 
     def process(self, snapshots):
-        log.info("Deleting %d ElastiCache snapshots", len(snapshots))
+        self.log.info("Deleting %d ElastiCache snapshots", len(snapshots))
         with self.executor_factory(max_workers=3) as w:
             futures = []
             client = local_session(self.manager.session_factory).client('elasticache')
@@ -493,3 +448,60 @@ def _cluster_eligible_for_snapshot(cluster):
         cluster['Engine'] != 'memcached' and not
         TTYPE.match(cluster['CacheNodeType'])
     )
+
+
+@resources.register('elasticache-group')
+class ElastiCacheReplicationGroup(QueryResourceManager):
+
+    class resource_type(TypeInfo):
+        service = "elasticache"
+        enum_spec = ('describe_replication_groups',
+                     'ReplicationGroups[]', None)
+        arn_type = 'replicationgroup'
+        id = name = dimension = 'ReplicationGroupId'
+        cfn_type = 'AWS::ElastiCache::ReplicationGroup'
+
+    permissions = ('elasticache:DescribeReplicationGroups',)
+
+
+@ElastiCacheReplicationGroup.filter_registry.register('kms-key')
+class KmsFilter(KmsRelatedFilter):
+
+    RelatedIdsExpression = 'KmsKeyId'
+
+
+@ElastiCacheReplicationGroup.action_registry.register('delete')
+class DeleteReplicationGroup(BaseAction):
+    """Action to delete a cache replication group
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: elasticache-delete-replication-group
+                resource: aws.elasticache-group
+                filters:
+                  - type: value
+                    key: AtRestEncryptionEnabled
+                    value: False
+                actions:
+                  - type: delete
+                    snapshot: False
+
+    """
+    schema = type_schema(
+        'delete', **{'snapshot': {'type': 'boolean'}})
+
+    valid_origin_states = ('available',)
+    permissions = ('elasticache:DeleteReplicationGroup',)
+
+    def process(self, resources):
+        resources = self.filter_resources(resources, 'Status', self.valid_origin_states)
+        client = local_session(self.manager.session_factory).client('elasticache')
+        for r in resources:
+            params = {'ReplicationGroupId': r['ReplicationGroupId']}
+            if self.data.get('snapshot', False):
+                params.update({'FinalSnapshotIdentifier': r['ReplicationGroupId'] + '-snapshot'})
+            self.manager.retry(client.delete_replication_group, **params, ignore_err_codes=(
+                'ReplicationGroupNotFoundFault',))

@@ -1,16 +1,5 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 
 import mock
@@ -37,8 +26,8 @@ class ShieldTest(BaseTest):
 
         set_shield = p.resource_manager.actions[0]
 
-        with mock.patch.object(p.resource_manager, "get_arn") as mock_get_arn:
-            mock_get_arn.side_effect = ["us-east-1:%s/lb" % i for i in map(str, range(5))]
+        with mock.patch.object(p.resource_manager, "get_arns") as mock_get_arn:
+            mock_get_arn.return_value = ["us-east-1:%s/lb" % i for i in map(str, range(5))]
             with mock.patch.object(
                 p.resource_manager, "get_resource_manager"
             ) as mock_resource_manager:

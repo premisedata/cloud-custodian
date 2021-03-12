@@ -1,16 +1,5 @@
-# Copyright 2017-2018 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 
 from .core import BaseAction
 from c7n import utils
@@ -22,7 +11,7 @@ class RemovePolicyBase(BaseAction):
         'remove-statements',
         required=['statement_ids'],
         statement_ids={'oneOf': [
-            {'enum': ['matched']},
+            {'enum': ['matched', "*"]},
             {'type': 'array', 'items': {'type': 'string'}}]})
 
     def process_policy(self, policy, resource, matched_key):
@@ -42,7 +31,7 @@ def remove_statements(match_ids, statements, matched=()):
         elif match_ids == 'matched':
             if s in matched:
                 s_found = True
-        elif s['Sid'] in match_ids:
+        elif 'Sid' in s and s['Sid'] in match_ids:
             s_found = True
         if s_found:
             found.append(s)
@@ -53,6 +42,30 @@ def remove_statements(match_ids, statements, matched=()):
 
 
 class ModifyPolicyBase(BaseAction):
+    """Action to modify resource IAM policy statements.
+
+    Applies to all resources with embedded IAM Policies.
+
+    :example:
+
+    .. code-block:: yaml
+
+           policies:
+              - name: sns-yank-cross-account
+                resource: sns
+                filters:
+                  - type: cross-account
+                actions:
+                  - type: modify-policy
+                    add-statements: [{
+                        "Sid": "ReplaceWithMe",
+                        "Effect": "Allow",
+                        "Principal": "*",
+                        "Action": ["SNS:GetTopicAttributes"],
+                        "Resource": topic_arn,
+                            }]
+                    remove-statements: '*'
+    """
 
     schema_alias = True
     schema = utils.type_schema(

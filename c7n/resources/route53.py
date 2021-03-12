@@ -1,18 +1,5 @@
-# Copyright 2016-2017 Capital One Services, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+# Copyright The Cloud Custodian Authors.
+# SPDX-License-Identifier: Apache-2.0
 import functools
 import fnmatch
 import json
@@ -21,7 +8,7 @@ import os
 
 from botocore.paginate import Paginator
 
-from c7n.query import QueryResourceManager, ChildResourceManager
+from c7n.query import QueryResourceManager, ChildResourceManager, TypeInfo, RetryPageIterator
 from c7n.manager import resources
 from c7n.utils import chunks, get_retry, generate_arn, local_session, type_schema
 from c7n.actions import BaseAction
@@ -31,7 +18,7 @@ from c7n.resources.shield import IsShieldProtected, SetShieldProtection
 from c7n.tags import RemoveTag, Tag
 
 
-class Route53Base(object):
+class Route53Base:
 
     permissions = ('route53:ListTagsForResources',)
     retry = staticmethod(get_retry(('Throttled',)))
@@ -42,7 +29,7 @@ class Route53Base(object):
             self._generate_arn = functools.partial(
                 generate_arn,
                 self.get_model().service,
-                resource_type=self.get_model().type)
+                resource_type=self.get_model().arn_type)
         return self._generate_arn
 
     def get_arn(self, r):
@@ -70,7 +57,7 @@ def _describe_route53_tags(
         for resource_batch in chunks(list(resource_map.keys()), 10):
             results = retry(
                 client.list_tags_for_resources,
-                ResourceType=model.type,
+                ResourceType=model.arn_type,
                 ResourceIds=resource_batch)
             for resource_tag_set in results['ResourceTagSets']:
                 if ('ResourceId' in resource_tag_set and
@@ -84,19 +71,17 @@ def _describe_route53_tags(
 @resources.register('hostedzone')
 class HostedZone(Route53Base, QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'route53'
-        type = 'hostedzone'
+        arn_type = 'hostedzone'
         enum_spec = ('list_hosted_zones', 'HostedZones', None)
         # detail_spec = ('get_hosted_zone', 'Id', 'Id', None)
         id = 'Id'
-        filter_name = None
         name = 'Name'
-        date = None
-        dimension = None
         universal_taggable = True
         # Denotes this resource type exists across regions
         global_resource = True
+        cfn_type = 'AWS::Route53::HostedZone'
 
     def get_arns(self, resource_set):
         arns = []
@@ -113,56 +98,45 @@ HostedZone.action_registry.register('set-shield', SetShieldProtection)
 @resources.register('healthcheck')
 class HealthCheck(Route53Base, QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'route53'
-        type = 'healthcheck'
+        arn_type = 'healthcheck'
         enum_spec = ('list_health_checks', 'HealthChecks', None)
         name = id = 'Id'
-        filter_name = None
-        date = None
-        dimension = None
         universal_taggable = True
+        cfn_type = 'AWS::Route53::HealthCheck'
 
 
 @resources.register('rrset')
 class ResourceRecordSet(ChildResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'route53'
-        type = 'rrset'
+        arn_type = 'rrset'
         parent_spec = ('hostedzone', 'HostedZoneId', None)
         enum_spec = ('list_resource_record_sets', 'ResourceRecordSets', None)
         name = id = 'Name'
-        filter_name = None
-        date = None
-        dimension = None
+        cfn_type = 'AWS::Route53::RecordSet'
 
 
 @resources.register('r53domain')
 class Route53Domain(QueryResourceManager):
 
-    class resource_type(object):
+    class resource_type(TypeInfo):
         service = 'route53domains'
-        type = 'r53domain'
+        arn_type = 'r53domain'
         enum_spec = ('list_domains', 'Domains', None)
         name = id = 'DomainName'
-        filter_name = None
-        date = None
-        dimension = None
 
     permissions = ('route53domains:ListTagsForDomain',)
 
     def augment(self, domains):
         client = local_session(self.session_factory).client('route53domains')
-
-        def _list_tags(d):
-            tags = client.list_tags_for_domain(
+        for d in domains:
+            d['Tags'] = self.retry(
+                client.list_tags_for_domain,
                 DomainName=d['DomainName'])['TagList']
-            d['Tags'] = tags
-            return d
-
-        with self.executor_factory(max_workers=1) as w:
-            return list(filter(None, w.map(_list_tags, domains)))
+        return domains
 
 
 @Route53Domain.action_registry.register('tag')
@@ -171,7 +145,7 @@ class Route53DomainAddTag(Tag):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
           - name: route53-tag
@@ -199,7 +173,7 @@ class Route53DomainRemoveTag(RemoveTag):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
           - name: route53-expired-tag
@@ -217,6 +191,84 @@ class Route53DomainRemoveTag(RemoveTag):
             client.delete_tags_for_domain(
                 DomainName=d[self.id_key],
                 TagsToDelete=keys)
+
+
+@HostedZone.action_registry.register('delete')
+class Delete(BaseAction):
+    """Action to delete Route 53 hosted zones.
+
+    It is recommended to use a filter to avoid unwanted deletion of R53 hosted zones.
+
+    If set to force this action will wipe out all records in the hosted zone
+    before deleting the zone.
+
+    :example:
+
+    .. code-block:: yaml
+
+            policies:
+              - name: route53-delete-testing-hosted-zones
+                resource: aws.hostedzone
+                filters:
+                  - 'tag:TestTag': present
+                actions:
+                  - type: delete
+                    force: true
+
+    """
+
+    schema = type_schema('delete', force={'type': 'boolean'})
+    permissions = ('route53:DeleteHostedZone',)
+
+    def process(self, hosted_zones):
+        client = local_session(self.manager.session_factory).client('route53')
+        error = None
+        for hz in hosted_zones:
+            if self.data.get('force'):
+                self.delete_records(client, hz)
+            try:
+                self.manager.retry(
+                    client.delete_hosted_zone,
+                    Id=hz['Id'],
+                    ignore_err_codes=('NoSuchHostedZone'))
+            except client.exceptions.HostedZoneNotEmpty as e:
+                self.log.warning(
+                    "HostedZone: %s cannot be deleted, "
+                    "set force to remove all records in zone",
+                    hz['Name'])
+                error = e
+        if error:
+            raise error
+
+    def delete_records(self, client, hz):
+        paginator = client.get_paginator('list_resource_record_sets')
+        paginator.PAGE_ITERATOR_CLS = RetryPageIterator
+        rrsets = paginator.paginate(HostedZoneId=hz['Id']).build_full_result()
+
+        for rrset in rrsets['ResourceRecordSets']:
+            # Trigger the deletion of all the resource record sets before deleting
+            # the hosted zone
+
+            # Exempt the two zone associated mandatory records
+            if rrset['Name'] == hz['Name'] and rrset['Type'] in ('NS', 'SOA'):
+                continue
+            self.manager.retry(
+                client.change_resource_record_sets,
+                HostedZoneId=hz['Id'],
+                ChangeBatch={
+                    'Changes': [
+                        {
+                            'Action': 'DELETE',
+                            'ResourceRecordSet': {
+                                'Name': rrset['Name'],
+                                'Type': rrset['Type'],
+                                'TTL': rrset['TTL'],
+                                'ResourceRecords': rrset['ResourceRecords']
+                            },
+                        }
+                    ]
+                },
+                ignore_err_codes=('InvalidChangeBatch'))
 
 
 @HostedZone.action_registry.register('set-query-logging')
@@ -239,7 +291,7 @@ class SetQueryLogging(BaseAction):
 
     :example:
 
-    .. code-block: yaml
+    .. code-block:: yaml
 
         policies:
           - name: enablednsquerylogging
@@ -259,7 +311,7 @@ class SetQueryLogging(BaseAction):
         'route53:CreateQueryLoggingConfig',
         'route53:DeleteQueryLoggingConfig',
         'logs:DescribeLogGroups',
-        'logs:CreateLogGroups',
+        'logs:CreateLogGroup',
         'logs:GetResourcePolicy',
         'logs:PutResourcePolicy')
 
@@ -295,7 +347,7 @@ class SetQueryLogging(BaseAction):
             perms.extend(('logs:GetResourcePolicy', 'logs:PutResourcePolicy'))
         if self.data.get('state', True):
             perms.append('route53:CreateQueryLoggingConfig')
-            perms.append('logs:CreateLogGroups')
+            perms.append('logs:CreateLogGroup')
             perms.append('logs:DescribeLogGroups')
             perms.append('tag:GetResources')
         else:
@@ -344,7 +396,7 @@ class SetQueryLogging(BaseAction):
             if log_manager.get_resources(list(group_names), augment=False):
                 groups = [{'logGroupName': g} for g in group_names]
         else:
-            common_prefix = os.path.commonprefix(group_names)
+            common_prefix = os.path.commonprefix(list(group_names))
             if common_prefix not in ('', '/'):
                 groups = log_manager.get_resources(
                     [common_prefix], augment=False)
