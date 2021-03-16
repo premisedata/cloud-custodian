@@ -136,16 +136,16 @@ class DeleteFirewall(MethodAction):
     .. yaml:
 
      policies:
-       - name: delete public access firewall rules
+       - name: delete-public-access-firewall-rules
          resource: gcp.firewall
          filters:
-          - type: value
-            key: sourceRanges
-            value: "0.0.0.0/0"
-            op: in
-            value_type: swap
+         - type: value
+           key: sourceRanges
+           value: "0.0.0.0/0"
+           op: in
+           value_type: swap
          actions:
-          - delete
+         - delete
     """
 
     schema = type_schema('delete')
