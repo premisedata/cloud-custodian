@@ -175,6 +175,8 @@ class ModifyFirewall(MethodAction):
            value: no-logging
          actions:
          - type: modify
+           logConfig:
+             enabled: true
     """
 
     schema = type_schema(

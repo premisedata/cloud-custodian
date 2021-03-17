@@ -19,6 +19,25 @@ class FirewallTest(BaseTest):
             'project_id': 'cloud-custodian'})
         self.assertEqual(fw['name'], 'allow-inbound-xyz')
 
+    def test_firewall_modify(self):
+        project_id = 'cloud-custodian'
+        factory = self.replay_flight_data('firewall-modify', project_id=project_id)
+        p = self.load_policy(
+            {'name': 'fdelete',
+             'resource': 'gcp.firewall',
+             'filters': [{'name': 'test'}],
+             'actions': [{'type': 'modify', 'priority': 500, 'targetTags': ['newtag']}]
+             },
+            session_factory=factory)
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        if self.recording:
+            time.sleep(5)
+        client = p.resource_manager.get_client()
+        result = client.execute_query('get', {'project': project_id, 'firewall': 'test'})
+        self.assertEqual(result["targetTags"][0], 'newtag')
+        self.assertEqual(result["priority"], 500)
+
     def test_firewall_delete(self):
         project_id = 'cloud-custodian'
         factory = self.replay_flight_data('firewall-delete', project_id=project_id)
