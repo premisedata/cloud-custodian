@@ -158,6 +158,50 @@ class DeleteFirewall(MethodAction):
         return {'project': project, 'firewall': resource_name}
 
 
+@Firewall.action_registry.register('modify')
+class ModifyFirewall(MethodAction):
+    """Modify filtered Firewall Rules
+
+    :example: Enable logging on filtered firewalls
+
+    .. yaml:
+
+     policies:
+       - name: enable-firewall-logging
+         resource: gcp.firewall
+         filters:
+         - type: value
+           key: name
+           value: no-logging
+         actions:
+         - type: modify
+    """
+
+    schema = type_schema(
+        'modify',
+        **{'description': {'type': 'string'},
+           'network': {'type': 'string'},
+           'priority': {'type': 'number'},
+           'sourceRanges': {'type': 'array', 'items': {'type': 'string'}},
+           'destinationRanges': {'type': 'array', 'items': {'type': 'string'}},
+           'sourceTags': {'type': 'array', 'items': {'type': 'string'}},
+           'targetTags': {'type': 'array', 'items': {'type': 'string'}},
+           'sourceServiceAccounts': {'type': 'array', 'items': {'type': 'string'}},
+           'targetServiceAccounts': {'type': 'array', 'items': {'type': 'string'}},
+           'allowed': {'type': 'array', 'items': {'type': 'object'}},
+           'denied': {'type': 'array', 'items': {'type': 'object'}},
+           'direction': {'enum': ['INGRESS', 'EGRESS']},
+           'logConfig': {'type': 'object'},
+           'disabled': {'type': 'boolean'}})
+    method_spec = {'op': 'patch'}
+    path_param_re = re.compile('.*?/projects/(.*?)/global/firewalls/(.*)')
+
+    def get_resource_params(self, m, r):
+        project, resource_name = self.path_param_re.match(
+            r['selfLink']).groups()
+        return {'project': project, 'firewall': resource_name, 'body': self.data}
+
+
 @resources.register('router')
 class Router(QueryResourceManager):
     """GCP resource: https://cloud.google.com/compute/docs/reference/rest/v1/routers
