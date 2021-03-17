@@ -196,6 +196,7 @@ class ModifyFirewall(MethodAction):
            'logConfig': {'type': 'object'},
            'disabled': {'type': 'boolean'}})
     method_spec = {'op': 'patch'}
+    permissions = ('compute.networks.updatePolicy', 'compute.firewalls.update')
     path_param_re = re.compile('.*?/projects/(.*?)/global/firewalls/(.*)')
 
     def get_resource_params(self, m, r):
