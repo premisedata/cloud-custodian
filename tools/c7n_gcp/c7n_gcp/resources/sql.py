@@ -27,6 +27,7 @@ class SqlInstance(QueryResourceManager):
         default_report_fields = [
             "name", "state", "databaseVersion", "settings.tier", "settings.dataDiskSizeGb"]
         asset_type = "sqladmin.googleapis.com/Instance"
+        scc_type = "google.cloud.sql.Instance"
         perm_service = 'cloudsql'
 
         @staticmethod

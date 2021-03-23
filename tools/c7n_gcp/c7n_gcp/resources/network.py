@@ -23,6 +23,7 @@ class Network(QueryResourceManager):
             "name", "description", "creationTimestamp",
             "autoCreateSubnetworks", "IPv4Range", "gatewayIPv4"]
         asset_type = "compute.googleapis.com/Network"
+        scc_type = "google.compute.Network"
 
 
 @resources.register('subnet')
@@ -39,6 +40,7 @@ class Subnet(QueryResourceManager):
             "name", "description", "creationTimestamp", "ipCidrRange",
             "gatewayAddress", "region", "state"]
         asset_type = "compute.googleapis.com/Subnetwork"
+        scc_type = "google.compute.Subnetwork"
 
         @staticmethod
         def get(client, resource_info):
@@ -119,6 +121,7 @@ class Firewall(QueryResourceManager):
             name, "description", "network", "priority", "creationTimestamp",
             "logConfig.enabled", "disabled"]
         asset_type = "compute.googleapis.com/Firewall"
+        scc_type = "google.compute.Firewall"
 
         @staticmethod
         def get(client, resource_info):

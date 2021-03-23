@@ -105,7 +105,7 @@ class CloudFunctionManager:
         #
         # convergent event source creation
         for e in func.events:
-            e.add(func)
+            e.before(func)
 
         if func_info is None:
             log.info("creating function")
@@ -126,6 +126,9 @@ class CloudFunctionManager:
                         'name': func_name,
                         'body': config,
                         'updateMask': update_mask})
+        for e in func.events:
+            e.after(func, response)
+
         return response
 
     def metrics(self, funcs, start, end, period=5 * 60):
@@ -369,11 +372,15 @@ class EventSource:
     def prefix(self):
         return self.data.get('prefix', 'custodian-auto-')
 
-    def add(self, func):
+    def before(self, func):
         """Default no-op
         """
 
     def remove(self, func):
+        """Default no-op
+        """
+
+    def after(self, func, response):
         """Default no-op
         """
 
@@ -471,7 +478,7 @@ class PubSubSource(EventSource):
 
         client.execute_command('setIamPolicy', {'resource': topic, 'body': {'policy': policy}})
 
-    def add(self, func):
+    def before(self, func):
         self.ensure_topic()
 
     def remove(self):
@@ -479,6 +486,58 @@ class PubSubSource(EventSource):
             return
         client = self.session.client('topic', 'v1', 'projects.topics')
         client.execute_command('delete', {'topic': self.get_topic_param()})
+
+
+class SCCSubscriber(EventSource):
+
+    def __init__(self, session, data, resource):
+        self.session = session
+        self.data = data
+        self.resource = resource
+
+    def notification_name(self):
+        return "custodian-auto-scc-{}".format(self.resource.type)
+
+    def ensure_notification_config(self):
+        """Verify the notification config exists.
+
+        Returns the notification config name.
+        """
+        client = self.session.client('securitycenter', 'v1', 'organizations.notificationConfigs')
+        config_name = "organizations/{}/notificationConfigs/{}".format(self.data["org"],
+         self.notification_name())
+        try:
+            client.execute_command('get', {'name': config_name})
+        except HttpError as e:
+            if e.resp.status != 404:
+                raise
+        else:
+            return config_name
+
+        config_body = {
+            'name': self.notification_name(),
+            'description': 'auto created by cloud custodian \
+                for resource {}'.format(self.resource.type),
+            'pubsubTopic': "projects/{}/topics/{}".format(self.session.get_default_project(),
+             self.data['topic']),
+            'streamingConfig': {
+                "filter": "resource.type=\"{}\"".format(self.resource.resource_type.scc_type)
+            }
+        }
+        client.execute_command('create', {
+            'configId': self.notification_name(),
+            'parent': 'organizations/{}'.format(self.data["org"]),
+            'body': config_body})
+        return config_name
+
+    def before(self, func):
+        self.ensure_notification_config()
+
+    def remove(self):
+        client = self.session.client('topic', 'v1', 'securitycenter.notificationConfigs')
+        config_name = "organizations/{}/notificationConfigs/{}".format(self.data["org"],
+         self.notification_name())
+        client.execute_command('delete', {'name': config_name})
 
 
 class PeriodicEvent(EventSource):
@@ -509,9 +568,9 @@ class PeriodicEvent(EventSource):
     def get_config(self, func):
         return self.get_target(func).get_config(func)
 
-    def add(self, func):
+    def before(self, func):
         target = self.get_target(func)
-        target.add(func)
+        target.before(func)
         job = self.get_job_config(func, target)
 
         client = self.session.client(
@@ -696,7 +755,7 @@ class LogSubscriber(EventSource):
         self.pubsub.ensure_iam(publisher=sink['writerIdentity'])
         return sink_path
 
-    def add(self, func):
+    def before(self, func):
         """Create any configured log sink if doesn't exist."""
         return self.ensure_sink()
 
@@ -746,8 +805,8 @@ class ApiSubscriber(EventSource):
             'log': log_name,
             'filter': log_filter}
 
-    def add(self, func):
-        return LogSubscriber(self.session, self.get_subscription(func)).add(func)
+    def before(self, func):
+        return LogSubscriber(self.session, self.get_subscription(func)).before(func)
 
     def remove(self, func):
         return LogSubscriber(self.session, self.get_subscription(func)).remove(func)

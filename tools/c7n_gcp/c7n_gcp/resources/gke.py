@@ -28,6 +28,7 @@ class KubernetesCluster(QueryResourceManager):
             'name', 'description', 'status', 'currentMasterVersion', 'currentNodeVersion',
             'currentNodeCount', 'location']
         asset_type = 'container.googleapis.com/Cluster'
+        scc_type = 'google.container.Cluster'
 
         @staticmethod
         def get(client, resource_info):

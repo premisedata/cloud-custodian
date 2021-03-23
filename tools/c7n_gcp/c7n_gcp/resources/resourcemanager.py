@@ -87,6 +87,7 @@ class Project(QueryResourceManager):
         default_report_fields = [
             "name", "displayName", "lifecycleState", "createTime", "parent"]
         asset_type = "cloudresourcemanager.googleapis.com/Project"
+        scc_type = "google.cloud.resourcemanager.Project"
         perm_service = 'resourcemanager'
         labels = True
         labels_op = 'update'
