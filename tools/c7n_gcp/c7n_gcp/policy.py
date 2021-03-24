@@ -200,21 +200,16 @@ class SCCMode(FunctionMode):
             self.policy.log.warning("Could not find resourceName in event")
             return
 
-        if self.policy.resource_manager.type not in event["finding"]["resourceName"]:
-            self.policy.log.warning("{} is not of type {}".format(event["finding"]["resourceName"],
-            self.policy.resource_manager.type))
-            return
-
-        resourceName = event["resourceName"].split('/')[-1]
-        project_id = event["resource.project_name"].split('/')[-1]
+        project_id = event["resource"].get("project", "").split('/')[-1]
         finding_details = {
-            "resourceName": resourceName,
-            "project": project_id
+            "resourceName": event["finding"]["resourceName"],
+            "project_id": project_id
         }
 
         resource = self.policy.resource_manager.get_resource(finding_details)
         # add finding fields to resource
-        resource.update(event)
+        resource.update({"finding": event["finding"]})
+
         return [resource]
 
     def _resource_topic(self):

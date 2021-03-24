@@ -46,7 +46,7 @@ def custodian_archive(packages=None, deps=()):
     requirements.update(deps)
     archive.add_contents(
         'requirements.txt',
-        generate_requirements(requirements, include_self=True))
+        generate_requirements(requirements, ignore=('setuptools'), include_self=True))
     return archive
 
 
@@ -126,6 +126,7 @@ class CloudFunctionManager:
                         'name': func_name,
                         'body': config,
                         'updateMask': update_mask})
+
         for e in func.events:
             e.after(func, response)
 
