@@ -69,7 +69,9 @@ class SubnetTest(BaseTest):
         p = self.load_policy({'name': 'subnet', 'resource': 'gcp.subnet'},
                              session_factory=factory)
         subnet = p.resource_manager.get_resource({
-            "resourceName": "//compute.googleapis.com/projects/cloud-custodian/regions/us-central1/subnetworks/default",
+            "resourceName":
+                "//compute.googleapis.com/projects/cloud-custodian/"
+                "regions/us-central1/subnetworks/default",
             "project_id": "cloud-custodian",
             "subnetwork_name": "default"})
         self.assertEqual(subnet['name'], 'default')

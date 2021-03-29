@@ -192,7 +192,7 @@ class SCCMode(FunctionMode):
         org={'type': 'integer'},
         required=['org'],
         rinherit=FunctionMode.schema)
-  
+
     def resolve_resources(self, event):
         """Resolve a gcp resource from its scc finding.
         """
