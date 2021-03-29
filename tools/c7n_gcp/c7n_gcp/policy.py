@@ -192,7 +192,7 @@ class SCCMode(FunctionMode):
         org={'type': 'integer'},
         required=['org'],
         rinherit=FunctionMode.schema)
-
+  
     def resolve_resources(self, event):
         """Resolve a gcp resource from its scc finding.
         """
@@ -227,7 +227,7 @@ class SCCMode(FunctionMode):
     def validate(self):
         if not self.policy.resource_manager.resource_type.get:
             raise PolicyValidationError(
-                "Resource:%s does not implement retrieval method" % (
+                "Resource:%s does not implement retrieval method get" % (
                     self.policy.resource_type))
         if not self.policy.resource_manager.resource_type.scc_type:
             raise PolicyValidationError(
