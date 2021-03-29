@@ -99,7 +99,7 @@ class CloudFunctionManager:
         if source_url:
             config['sourceUploadUrl'] = source_url
 
-        # todo - we'll really need add() and after() for pre-provisioning of
+        # todo - we'll really need before() and after() for pre-provisioning of
         # resources (ie topic for function stream on create) and post provisioning (schedule
         # invocation of extant function).
         #
@@ -126,7 +126,6 @@ class CloudFunctionManager:
                         'name': func_name,
                         'body': config,
                         'updateMask': update_mask})
-
         return response
 
     def metrics(self, funcs, start, end, period=5 * 60):
