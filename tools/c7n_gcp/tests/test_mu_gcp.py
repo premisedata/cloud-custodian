@@ -262,3 +262,63 @@ class FunctionTest(BaseTest):
             # function requirements building primarily.
             time.sleep(42)
         p.get_execution_mode().deprovision()
+
+    @functional
+    def test_scc_subscriber(self):
+
+        project_id = 'cloud-custodian'
+        org = 111111111111
+        factory = self.replay_flight_data('mu-scc-subscriber', project_id=project_id)
+        p = self.load_policy(
+            {'name': 'test-scc',
+             'resource': 'gcp.bucket',
+             'mode': {
+                 'type': 'gcp-scc',
+                 'org': org}},
+            session_factory=factory)
+
+        # Create all policy resources.
+        p.provision()
+
+        session = factory()
+        region = 'us-central1'
+        func_client = session.client('cloudfunctions', 'v1', 'projects.locations.functions')
+        pubsub_client = session.client('pubsub', 'v1', 'projects.topics')
+        notification_client = session.client('securitycenter', 'v1',
+            'organizations.notificationConfigs')
+
+        # Check on the resources for the scc subscription
+
+        pubsub_topic = 'projects/{}/topics/custodian-auto-scc-bucket'.format(
+            project_id)
+        # check function exists
+        func_info = func_client.execute_command(
+            'get', {'name': 'projects/{}/locations/{}/functions/test-scc'.format(
+                project_id, region)})
+        self.assertEqual(
+            func_info['eventTrigger']['eventType'],
+            'providers/cloud.pubsub/eventTypes/topic.publish')
+        self.assertEqual(
+            func_info['eventTrigger']['resource'],
+            pubsub_topic)
+
+        # check notification config exists
+        config_name = "organizations/{}/notificationConfigs/{}".format(org,
+         "custodian-auto-scc-bucket")
+
+        notification_config = notification_client.execute_command(
+            'get', {'name': config_name})
+        self.assertEqual(
+            notification_config['pubsubTopic'], pubsub_topic)
+
+        # check topic exists
+        topic_info = pubsub_client.execute_command(
+            'get', {'topic': pubsub_topic})
+        self.assertEqual(
+            topic_info['name'], pubsub_topic)
+
+        if self.recording:
+            # we sleep to allow time for in progress operations on creation to complete
+            # function requirements building primarily.
+            time.sleep(42)
+        p.get_execution_mode().deprovision()

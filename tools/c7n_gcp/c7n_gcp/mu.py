@@ -99,13 +99,13 @@ class CloudFunctionManager:
         if source_url:
             config['sourceUploadUrl'] = source_url
 
-        # todo - we'll really need before() and after() for pre-provisioning of
+        # todo - we'll really need add() and after() for pre-provisioning of
         # resources (ie topic for function stream on create) and post provisioning (schedule
         # invocation of extant function).
         #
         # convergent event source creation
         for e in func.events:
-            e.before(func)
+            e.add(func)
 
         if func_info is None:
             log.info("creating function")
@@ -126,9 +126,6 @@ class CloudFunctionManager:
                         'name': func_name,
                         'body': config,
                         'updateMask': update_mask})
-
-        for e in func.events:
-            e.after(func, response)
 
         return response
 
@@ -373,15 +370,11 @@ class EventSource:
     def prefix(self):
         return self.data.get('prefix', 'custodian-auto-')
 
-    def before(self, func):
+    def add(self, func):
         """Default no-op
         """
 
     def remove(self, func):
-        """Default no-op
-        """
-
-    def after(self, func, response):
         """Default no-op
         """
 
@@ -479,13 +472,13 @@ class PubSubSource(EventSource):
 
         client.execute_command('setIamPolicy', {'resource': topic, 'body': {'policy': policy}})
 
-    def before(self, func):
+    def add(self, func):
         self.ensure_topic()
 
-    def remove(self):
+    def remove(self, func):
         if not self.data.get('topic').startswith(self.prefix):
             return
-        client = self.session.client('topic', 'v1', 'projects.topics')
+        client = self.session.client('pubsub', 'v1', 'projects.topics')
         client.execute_command('delete', {'topic': self.get_topic_param()})
 
 
@@ -531,11 +524,11 @@ class SCCSubscriber(EventSource):
             'body': config_body})
         return config_name
 
-    def before(self, func):
+    def add(self, func):
         self.ensure_notification_config()
 
-    def remove(self):
-        client = self.session.client('topic', 'v1', 'securitycenter.notificationConfigs')
+    def remove(self, func):
+        client = self.session.client('securitycenter', 'v1', 'organizations.notificationConfigs')
         config_name = "organizations/{}/notificationConfigs/{}".format(self.data["org"],
          self.notification_name())
         client.execute_command('delete', {'name': config_name})
@@ -569,9 +562,9 @@ class PeriodicEvent(EventSource):
     def get_config(self, func):
         return self.get_target(func).get_config(func)
 
-    def before(self, func):
+    def add(self, func):
         target = self.get_target(func)
-        target.before(func)
+        target.add(func)
         job = self.get_job_config(func, target)
 
         client = self.session.client(
@@ -756,7 +749,7 @@ class LogSubscriber(EventSource):
         self.pubsub.ensure_iam(publisher=sink['writerIdentity'])
         return sink_path
 
-    def before(self, func):
+    def add(self, func):
         """Create any configured log sink if doesn't exist."""
         return self.ensure_sink()
 
@@ -806,8 +799,8 @@ class ApiSubscriber(EventSource):
             'log': log_name,
             'filter': log_filter}
 
-    def before(self, func):
-        return LogSubscriber(self.session, self.get_subscription(func)).before(func)
+    def add(self, func):
+        return LogSubscriber(self.session, self.get_subscription(func)).add(func)
 
     def remove(self, func):
         return LogSubscriber(self.session, self.get_subscription(func)).remove(func)
