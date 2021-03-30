@@ -82,12 +82,12 @@ class EffectiveFirewall(ValueFilter):
         policies:
            - name: find-publicly-accessable-instances
              resource: gcp.instances
-            filters:
-            - type: effective-firewall
-              key: firewalls[*].sourceRanges[]
-              op: in
-              value_type: swap
-              value: "0.0.0.0/0"
+             filters:
+             - type: effective-firewall
+               key: firewalls[*].sourceRanges[]
+               op: in
+               value_type: swap
+               value: "0.0.0.0/0"
     """
 
     schema = type_schema('effective-firewall', rinherit=ValueFilter.schema)
