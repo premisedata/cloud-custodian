@@ -81,7 +81,7 @@ class EffectiveFirewall(ValueFilter):
 
         policies:
            - name: find-publicly-accessable-instances
-             resource: gcp.instances
+             resource: gcp.instance
              filters:
              - type: effective-firewall
                key: firewalls[*].sourceRanges[]
