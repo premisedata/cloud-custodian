@@ -80,7 +80,7 @@ class EffectiveFirewall(ValueFilter):
     .. code-block:: yaml
 
         policies:
-           - name: find publicly accessable instances
+           - name: find-publicly-accessable-instances
              resource: gcp.instances
             filters:
             - type: effective-firewall
