@@ -91,6 +91,7 @@ class EffectiveFirewall(ValueFilter):
     """
 
     schema = type_schema('effective-firewall', rinherit=ValueFilter.schema)
+    permissions = ('compute.instances.getEffectiveFirewalls',)
 
     def get_resource_params(self, resource):
         path_param_re = re.compile('.*?/projects/(.*?)/zones/(.*?)/instances/.*')
