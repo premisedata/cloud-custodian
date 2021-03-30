@@ -25,6 +25,15 @@ class Network(QueryResourceManager):
         asset_type = "compute.googleapis.com/Network"
         scc_type = "google.compute.Network"
 
+        @staticmethod
+        def get(client, resource_info):
+
+            path_param_re = re.compile('.*?/projects/(.*?)/global/networks/(.*)')
+            project, network = path_param_re.match(
+                resource_info["resourceName"]).groups()
+            return client.execute_query(
+                'get', {'project': project, 'subnetwork': network})
+
 
 @resources.register('subnet')
 class Subnet(QueryResourceManager):
