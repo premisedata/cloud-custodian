@@ -27,12 +27,11 @@ class Network(QueryResourceManager):
 
         @staticmethod
         def get(client, resource_info):
-
             path_param_re = re.compile('.*?/projects/(.*?)/global/networks/(.*)')
             project, network = path_param_re.match(
                 resource_info["resourceName"]).groups()
             return client.execute_query(
-                'get', {'project': project, 'subnetwork': network})
+                'get', {'project': project, 'network': network})
 
 
 @resources.register('subnet')

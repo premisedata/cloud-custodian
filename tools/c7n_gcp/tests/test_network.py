@@ -61,6 +61,21 @@ class FirewallTest(BaseTest):
             self.assertTrue("was not found" in str(e))
 
 
+class NetworkTest(BaseTest):
+
+    def test_network_get(self):
+        factory = self.replay_flight_data(
+            'network-get-resource', project_id='cloud-custodian')
+        p = self.load_policy({'name': 'network', 'resource': 'gcp.vpc'},
+                             session_factory=factory)
+        network = p.resource_manager.get_resource({
+            "resourceName":
+                "//compute.googleapis.com/projects/cloud-custodian/"
+                "global/networks/default"})
+        self.assertEqual(network['name'], 'default')
+        self.assertEqual(network['autoCreateSubnetworks'], True)
+
+
 class SubnetTest(BaseTest):
 
     def test_subnet_get(self):
