@@ -85,8 +85,7 @@ class EffectiveFirewall(ValueFilter):
              filters:
              - type: effective-firewall
                key: firewalls[*].sourceRanges[]
-               op: in
-               value_type: swap
+               op: contains
                value: "0.0.0.0/0"
     """
 
