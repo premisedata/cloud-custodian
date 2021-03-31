@@ -286,6 +286,7 @@ class ChildResourceManager(QueryResourceManager):
     @staticmethod
     def _extract_fields(source, mappings):
         result = {}
+
         for mapping in mappings:
             result[mapping[1]] = jmespath.search(mapping[0], source)
 
