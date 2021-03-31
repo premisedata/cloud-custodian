@@ -40,6 +40,40 @@ class ServiceAccountTest(BaseTest):
         self.assertEqual(resource['displayName'], 'devtest')
 
 
+class ServiceAccountKeyTest(BaseTest):
+
+    def test_service_account_key_query(self):
+        project_id = "cloud-custodian"
+
+        session_factory = self.replay_flight_data(
+            'iam-service-account-key-query', project_id)
+
+        policy = self.load_policy(
+            {
+                'name': 'iam-service-account-key-query',
+                'resource': 'gcp.service-account-key'
+            },
+            session_factory=session_factory)
+
+        resources = policy.run()
+        self.assertEqual(len(resources), 2)
+        self.assertEqual(resources[0]["keyType"], "SYSTEM_MANAGED")
+        self.assertEqual(resources[1]["keyType"], "USER_MANAGED")
+
+    def test_get_service_account_key(self):
+        factory = self.replay_flight_data('iam-service-account-key')
+        p = self.load_policy({
+            'name': 'sa-key-get',
+            'resource': 'gcp.service-account-key'},
+            session_factory=factory)
+        resource = p.resource_manager.get_resource(
+            {'resourceName': '//iam.googleapis.com/projects/cloud-custodian/'
+            'serviceAccounts/111111111111111/keys/2222'})
+        self.assertEqual(resource['keyType'], 'USER_MANAGED')
+        self.assertEqual(resource["c7n:service-account"]["email"],
+        "test-cutodian-scc@cloud-custodian.iam.gserviceaccount.com")
+
+
 class IAMRoleTest(BaseTest):
 
     def test_iam_role_query(self):
