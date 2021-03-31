@@ -1,7 +1,10 @@
 # Copyright The Cloud Custodian Authors.
 # SPDX-License-Identifier: Apache-2.0
 
+import time
+
 from gcp_common import BaseTest, event_data
+from googleapiclient.errors import HttpError
 
 
 class ProjectRoleTest(BaseTest):
@@ -72,6 +75,25 @@ class ServiceAccountKeyTest(BaseTest):
         self.assertEqual(resource['keyType'], 'USER_MANAGED')
         self.assertEqual(resource["c7n:service-account"]["email"],
         "test-cutodian-scc@cloud-custodian.iam.gserviceaccount.com")
+
+    def test_delete_service_account_key(self):
+        factory = self.replay_flight_data('iam-delete-service-account-key')
+        p = self.load_policy({
+            'name': 'sa-key-delete',
+            'resource': 'gcp.service-account-key',
+            'actions': ['delete']},
+            session_factory=factory)
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        if self.recording:
+            time.sleep(1)
+        client = p.resource_manager.get_client()
+        try:
+            result = client.execute_query(
+                'get', {'name': resources[0]["name"]})
+            self.fail('found deleted service account key: %s' % result)
+        except HttpError as e:
+            self.assertTrue("does not exist" in str(e))
 
 
 class IAMRoleTest(BaseTest):
