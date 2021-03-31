@@ -96,6 +96,7 @@ class ServiceAccountKey(ChildResourceManager):
         }
         asset_type = "iam.googleapis.com/ServiceAccountKey"
         scc_type = "google.iam.ServiceAccountKey"
+        permissions = ("iam.serviceAccounts.list",)
 
         @staticmethod
         def get(client, resource_info):
