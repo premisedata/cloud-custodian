@@ -91,6 +91,7 @@ class GCPMetricsFilter(Filter):
           'reducer': {'type': 'string', 'enum': REDUCERS},
           'aligner': {'type': 'string', 'enum': ALIGNERS},
           'value': {'type': 'number'},
+          'filter': {'type': 'string'},
           'period': {'type': 'number'},
           'missing-value': {'type': 'number'},
           'required': ('value', 'name', 'op')})
@@ -113,6 +114,8 @@ class GCPMetricsFilter(Filter):
         self.resource_metric_dict = {}
         self.op = OPERATORS[self.data.get('op', 'less-than')]
         self.value = self.data['value']
+        self.filter = self.data.get('filter')
+        self.c7n_metric_key = "%s.%s.%s" % (self.metric, self.aligner, self.reducer)
 
         session = local_session(self.manager.session_factory)
         client = session.client("monitoring", "v3", "projects.timeSeries")
@@ -129,6 +132,10 @@ class GCPMetricsFilter(Filter):
             'view': 'FULL'
         }
         metric_list = client.execute_query('list', {'name': 'projects/' + project, **query_params})
+        if not metric_list.get('timeSeries'):
+            self.log.info("No metrics found for {}".format(self.c7n_metric_key))
+            return []
+
         self.split_by_resource(metric_list['timeSeries'])
         matched = [r for r in resources if self.process_resource(r)]
 
@@ -141,6 +148,9 @@ class GCPMetricsFilter(Filter):
             resource_name = jmespath.search(self.resource_key, r)
             metric_filter += '{} = "{}" OR '.format(self.metric_key, resource_name)
         metric_filter = metric_filter.rsplit(' OR ', 1)[0]
+
+        if self.filter:
+            metric_filter = metric_filter + " AND " + self.filter
         return metric_filter
 
     def split_by_resource(self, metric_list):
@@ -158,8 +168,7 @@ class GCPMetricsFilter(Filter):
         else:
             metric_value = float(list(metric["points"][0]["value"].values())[0])
 
-        c7n_metric_key = "%s.%s.%s" % (self.metric, self.aligner, self.reducer)
-        resource_metric[c7n_metric_key] = metric
+        resource_metric[self.c7n_metric_key] = metric
 
         matched = self.op(metric_value, self.value)
         return matched
