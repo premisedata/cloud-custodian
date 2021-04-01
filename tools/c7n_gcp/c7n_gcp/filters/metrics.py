@@ -72,8 +72,8 @@ class GCPMetricsFilter(Filter):
         filters:
         - type: metrics
           name: firewallinsights.googleapis.com/subnet/firewall_hit_count
-          metric_key: metric.labels.firewall_name
-          resource_key: name
+          metric-key: metric.labels.firewall_name
+          resource-key: name
           aligner: ALIGN_COUNT
           days: 14
           value: 1
