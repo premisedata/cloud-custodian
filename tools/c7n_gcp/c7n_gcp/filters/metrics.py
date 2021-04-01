@@ -85,7 +85,7 @@ class GCPMetricsFilter(Filter):
         **{'name': {'type': 'string'},
           'resource-key': {'type': 'string'},
           'metric-key': {'type': 'string'},
-          'group-by-fields': {'type': 'array', 'items': {'type', 'string'}},
+          'group-by-fields': {'type': 'array', 'items': {'type': 'string'}},
           'days': {'type': 'number'},
           'op': {'type': 'string', 'enum': list(OPERATORS.keys())},
           'reducer': {'type': 'string', 'enum': REDUCERS},
@@ -94,7 +94,6 @@ class GCPMetricsFilter(Filter):
           'period': {'type': 'number'},
           'missing-value': {'type': 'number'},
           'required': ('value', 'name', 'op')})
-    schema_alias = True
     permissions = ("monitoring.timeSeries.list",)
 
     def process(self, resources, event=None):
