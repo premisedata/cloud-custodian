@@ -67,8 +67,8 @@ class GCPMetricsFilter(Filter):
 
     .. code-block:: yaml
 
-      - name: ec2-underutilized
-        resource: ec2
+      - name: firewall-hit-count
+        resource: gcp.firewall
         filters:
         - type: metrics
           name: firewallinsights.googleapis.com/subnet/firewall_hit_count
