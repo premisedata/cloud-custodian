@@ -92,9 +92,8 @@ class GCPMetricsFilter(Filter):
           'aligner': {'type': 'string', 'enum': ALIGNERS},
           'value': {'type': 'number'},
           'filter': {'type': 'string'},
-          'period': {'type': 'number'},
           'missing-value': {'type': 'number'},
-          'required': ('value', 'name', 'op')})
+          'required': ('value', 'name', 'op', 'metric-key')})
     permissions = ("monitoring.timeSeries.list",)
 
     def process(self, resources, event=None):
@@ -102,12 +101,12 @@ class GCPMetricsFilter(Filter):
         duration = timedelta(days)
 
         self.metric = self.data['name']
-        self.resource_key = self.data['resource-key']
+        self.resource_key = self.data.get('resource-key', self.manager.resource_type.name)
         self.metric_key = self.data['metric-key']
         self.aligner = self.data.get('aligner', 'ALIGN_NONE')
         self.reducer = self.data.get('reducer', 'REDUCE_NONE')
         self.group_by_fields = self.data.get('group-by-fields', [])
-        self.missing_value = self.data.get('missing-value', 0)
+        self.missing_value = self.data.get('missing-value')
         self.end = datetime.now(pytz.timezone('UTC'))
         self.start = self.end - duration
         self.period = str((self.end - self.start).total_seconds()) + 's'
@@ -142,12 +141,13 @@ class GCPMetricsFilter(Filter):
         return matched
 
     def get_query_filter(self, resources):
-        metric_filter = 'metric.type = "{}" AND '.format(self.metric)
+        metric_filter = 'metric.type = "{}" AND ('.format(self.metric)
 
         for r in resources:
             resource_name = jmespath.search(self.resource_key, r)
             metric_filter += '{} = "{}" OR '.format(self.metric_key, resource_name)
-        metric_filter = metric_filter.rsplit(' OR ', 1)[0]
+        metric_filter = metric_filter.rsplit(' OR ', 1)[0] + ' ) '
+
 
         if self.filter:
             metric_filter = metric_filter + " AND " + self.filter
@@ -163,6 +163,8 @@ class GCPMetricsFilter(Filter):
 
         resource_name = jmespath.search(self.resource_key, resource)
         metric = self.resource_metric_dict.get(resource_name)
+        if not metric and not self.missing_value:
+            return False
         if not metric:
             metric_value = self.missing_value
         else:
