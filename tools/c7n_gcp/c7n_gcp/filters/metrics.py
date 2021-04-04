@@ -148,7 +148,6 @@ class GCPMetricsFilter(Filter):
             metric_filter += '{} = "{}" OR '.format(self.metric_key, resource_name)
         metric_filter = metric_filter.rsplit(' OR ', 1)[0] + ' ) '
 
-
         if self.filter:
             metric_filter = metric_filter + " AND " + self.filter
         return metric_filter
