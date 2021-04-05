@@ -173,14 +173,29 @@ class ApiAuditMode(FunctionMode):
 
 
 @execution.register('gcp-scc')
-class SCCMode(FunctionMode):
-    """Custodian policy execution on gcp scc findings.
+class SecurityCenterMode(FunctionMode):
+    """Custodian policy execution on GCP Security Command Center (SCC) findings.
 
-    Deploys as a Cloud Function triggered by scc findings. This allows
-    you to apply your policies as soon as a scc finding occurs.
-    See `SCC findings
-    <https://cloud.google.com/security-command-center/docs/concepts-security-command-center-overview#google-cloud-security-findings>`_
+    Deploys as a Cloud Function triggered by SCC findings. This allows
+    you to apply your policies as soon as a SCC finding occurs.
+    See `Security Command Center
+    <https://cloud.google.com/security-command-center/docs/concepts-security-command-center-overview#introduction>`_
     for more details.
+
+    .. code-block:: yaml
+
+      - name: delete-high-severity-firewall-findings
+        resource: gcp.firewall
+        mode:
+          service-account: SERVICE_ACCOUNT_NAME@PROJECT.iam.gserviceaccount.com
+          type: gcp-scc
+          org: ORG_ID
+        filters:
+        - type: value
+          key: severity
+          value: HIGH
+        actions:
+          - delete
 
     Default region the function is deployed to is
     ``us-central1``. In case you want to change that, use the cli
@@ -219,7 +234,7 @@ class SCCMode(FunctionMode):
         events = [
             mu.PubSubSource(local_session(self.policy.session_factory),
             {"topic": self._resource_topic()}),
-            mu.SCCSubscriber(local_session(self.policy.session_factory),
+            mu.SecurityCenterSubscriber(local_session(self.policy.session_factory),
              {"topic": self._resource_topic(),
              "org": self.policy.data["mode"]["org"]}, self.policy.resource_manager)]
         return mu.PolicyFunction(self.policy, events=events)

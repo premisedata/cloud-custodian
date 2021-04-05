@@ -481,7 +481,7 @@ class PubSubSource(EventSource):
         client.execute_command('delete', {'topic': self.get_topic_param()})
 
 
-class SCCSubscriber(EventSource):
+class SecurityCenterSubscriber(EventSource):
 
     def __init__(self, session, data, resource):
         self.session = session

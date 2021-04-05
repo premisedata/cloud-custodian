@@ -334,7 +334,7 @@ class FunctionTest(BaseTest):
                 'org': 111111111111}},
             session_factory=factory)
         exec_mode = p.get_execution_mode()
-        self.assertTrue(isinstance(exec_mode, policy.SCCMode))
+        self.assertTrue(isinstance(exec_mode, policy.SecurityCenterMode))
         event = event_data('network-finding.json')
         resources = exec_mode.run(event, None)
         self.assertEqual(len(resources), 1)
