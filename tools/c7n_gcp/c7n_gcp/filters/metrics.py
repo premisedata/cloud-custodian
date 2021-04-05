@@ -8,7 +8,7 @@ import pytz
 
 import jmespath
 
-from c7n.filters.core import Filter, OPERATORS
+from c7n.filters.core import Filter, OPERATORS, FilterValidationError
 from c7n.utils import local_session, type_schema
 
 from c7n_gcp.provider import resources as gcp_resources
@@ -72,7 +72,6 @@ class GCPMetricsFilter(Filter):
         filters:
         - type: metrics
           name: firewallinsights.googleapis.com/subnet/firewall_hit_count
-          metric-key: metric.labels.firewall_name
           resource-key: name
           aligner: ALIGN_COUNT
           days: 14
@@ -93,8 +92,15 @@ class GCPMetricsFilter(Filter):
           'value': {'type': 'number'},
           'filter': {'type': 'string'},
           'missing-value': {'type': 'number'},
-          'required': ('value', 'name', 'op', 'metric-key')})
+          'required': ('value', 'name', 'op')})
     permissions = ("monitoring.timeSeries.list",)
+
+    def validate(self):
+        if not self.data.get('metric-key') and \
+           not hasattr(self.manager.resource_type, 'metric_key'):
+            raise FilterValidationError("metric-key not defined for resource %s,"
+            "so must be provided in the policy" % (self.manager.type))
+        return self
 
     def process(self, resources, event=None):
         days = self.data.get('days', 14)
@@ -102,7 +108,7 @@ class GCPMetricsFilter(Filter):
 
         self.metric = self.data['name']
         self.resource_key = self.data.get('resource-key', self.manager.resource_type.name)
-        self.metric_key = self.data['metric-key']
+        self.metric_key = self.data.get('metric-key', self.manager.resource_type.metric_key)
         self.aligner = self.data.get('aligner', 'ALIGN_NONE')
         self.reducer = self.data.get('reducer', 'REDUCE_NONE')
         self.group_by_fields = self.data.get('group-by-fields', [])
