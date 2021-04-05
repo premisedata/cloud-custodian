@@ -141,12 +141,16 @@ class GCPMetricsFilter(Filter):
         return matched
 
     def get_query_filter(self, resources):
-        metric_filter = 'metric.type = "{}" AND ('.format(self.metric)
+        metric_filter = 'metric.type = "{}" AND ( '.format(self.metric)
 
+        resource_filter = []
         for r in resources:
             resource_name = jmespath.search(self.resource_key, r)
-            metric_filter += '{} = "{}" OR '.format(self.metric_key, resource_name)
-        metric_filter = metric_filter.rsplit(' OR ', 1)[0] + ' ) '
+            resource_filter.append('{} = "{}"'.format(self.metric_key, resource_name))
+            resource_filter.append(' OR ')
+        resource_filter.pop()
+        resource_filter.append(' ) ')
+        metric_filter += ''.join(resource_filter)
 
         if self.filter:
             metric_filter = metric_filter + " AND " + self.filter
