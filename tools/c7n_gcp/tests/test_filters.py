@@ -55,3 +55,45 @@ class TestGCPMetricsFilter(BaseTest):
         )
         resources = p.run()
         self.assertEqual(len(resources), 0)
+
+
+class TestSecurityComandCenterFindingsFilter(BaseTest):
+
+    def test_findings(self):
+
+        session_factory = self.replay_flight_data("filter-scc-findings")
+
+        p = self.load_policy(
+            {
+                "name": "test-scc-findings",
+                "resource": "gcp.bucket",
+                "filters": [
+                    {'type': 'scc-findings',
+                     'org': '111111111111',
+                     'key': '[].finding.category',
+                     'value': 'BUCKET_LOGGING_DISABLED',
+                     'op': 'contains'}],
+            },
+            session_factory=session_factory,
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]['c7n.findings'][0]['finding']['category'],
+          'BUCKET_LOGGING_DISABLED')
+
+    def test_findings_no_key(self):
+
+        session_factory = self.replay_flight_data("filter-scc-findings")
+
+        p = self.load_policy(
+            {
+                "name": "test-scc-findings",
+                "resource": "gcp.bucket",
+                "filters": [
+                    {'type': 'scc-findings',
+                     'org': '111111111111'}],
+            },
+            session_factory=session_factory,
+        )
+        resources = p.run()
+        self.assertEqual(len(resources), 1)

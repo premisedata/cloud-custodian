@@ -23,7 +23,8 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
           op: contains
     """
 
-    schema = type_schema('scc-findings', rinherit=ValueFilter.schema, org={'type':'integer'}, required=['org'])
+    schema = type_schema('scc-findings', rinherit=ValueFilter.schema,
+    org={'type': 'integer'}, required=['org'])
     required_keys = {}
 
     def process(self, resources, event=None):
@@ -31,16 +32,16 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
 
         session = local_session(self.manager.session_factory)
         client = session.client("securitycenter", "v1", "organizations.sources.findings")
-        project = session.get_default_project()
 
         query_params = {
             'filter': self.get_resource_filter(resources),
             'pageSize': 1000
         }
-        findings_list = client.execute_query('list', {'parent': 'organizations/{}/sources/-'.format(self.data['org']), **query_params})
+        findings_list = client.execute_query('list',
+          {'parent': 'organizations/{}/sources/-'.format(self.data['org']), **query_params})
 
         if not findings_list.get('listFindingsResults'):
-            findings_list = {'listFindingsResults':[]}
+            findings_list = {'listFindingsResults': []}
 
         self.split_by_resource(findings_list['listFindingsResults'])
 
@@ -60,13 +61,13 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
     def split_by_resource(self, finding_list):
         for f in finding_list:
             resource_name = f["finding"]["resourceName"].split('/')[-1]
-            resource_findings = self.findings_by_resource.get(resource_name,[])
+            resource_findings = self.findings_by_resource.get(resource_name, [])
             resource_findings.append(f)
             self.findings_by_resource[resource_name] = resource_findings
 
     def process_resource(self, resource):
         resource_name = resource[self.manager.resource_type.name]
-        resource_findings = self.findings_by_resource.get(resource_name,[])
+        resource_findings = self.findings_by_resource.get(resource_name, [])
         resource.setdefault('c7n.findings', []).extend(resource_findings)
 
         if not self.data.get('key'):
