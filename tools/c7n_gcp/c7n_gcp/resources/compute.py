@@ -103,7 +103,7 @@ class EffectiveFirewall(ValueFilter):
         for interface in resource["networkInterfaces"]:
             effective_firewalls.append(client.execute_command(
                 'getEffectiveFirewalls', {"networkInterface": interface["name"], **params}))
-        return super(ValueFilter, self).process(effective_firewalls, None)
+        return super(EffectiveFirewall, self).process(effective_firewalls, None)
 
     def get_client(self, session, model):
         return session.client(
