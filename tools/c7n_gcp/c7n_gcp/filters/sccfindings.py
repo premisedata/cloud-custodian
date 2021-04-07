@@ -13,18 +13,14 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
 
     .. code-block:: yaml
 
-      - name: bucket-contains-finding
-        resource: gcp.bucket
-        filters:
-        - scc-finding
-
       - name: bucket-contains-high-finding
         resource: gcp.bucket
         filters:
         - type: scc-finding
-          key: findings[].category
+          org: 11111111111111
+          key: "[].finding.category"
+          severity: HIGH
           op: contains
-          value: BUCKET_LOGGING_DISABLED 
     """
 
     schema = type_schema('scc-findings', rinherit=ValueFilter.schema, org={'type':'integer'}, required=['org'])
