@@ -51,6 +51,8 @@ ALIGNERS = [
     'ALIGN_PERCENTILE_05',
     'ALIGN_PERCENT_CHANG']
 
+BATCH_SIZE = 10000
+
 
 class GCPMetricsFilter(Filter):
     """Supports metrics filters on resources.
@@ -119,48 +121,78 @@ class GCPMetricsFilter(Filter):
         self.resource_metric_dict = {}
         self.op = OPERATORS[self.data.get('op', 'less-than')]
         self.value = self.data['value']
-        self.filter = self.data.get('filter')
+        self.filter = self.data.get('filter', '')
         self.c7n_metric_key = "%s.%s.%s" % (self.metric, self.aligner, self.reducer)
 
         session = local_session(self.manager.session_factory)
         client = session.client("monitoring", "v3", "projects.timeSeries")
         project = session.get_default_project()
 
-        query_params = {
-            'filter': self.get_query_filter(resources),
-            'interval_startTime': self.start.isoformat(),
-            'interval_endTime': self.end.isoformat(),
-            'aggregation_alignmentPeriod': self.period,
-            "aggregation_perSeriesAligner": self.aligner,
-            "aggregation_crossSeriesReducer": self.reducer,
-            "aggregation_groupByFields": self.group_by_fields,
-            'view': 'FULL'
-        }
-        metric_list = client.execute_query('list', {'name': 'projects/' + project, **query_params})
-        if not metric_list.get('timeSeries'):
+        time_series_data = []
+        for batched_filter in self.get_batched_query_filter(resources):
+            query_params = {
+                'filter': batched_filter,
+                'interval_startTime': self.start.isoformat(),
+                'interval_endTime': self.end.isoformat(),
+                'aggregation_alignmentPeriod': self.period,
+                "aggregation_perSeriesAligner": self.aligner,
+                "aggregation_crossSeriesReducer": self.reducer,
+                "aggregation_groupByFields": self.group_by_fields,
+                'view': 'FULL'
+            }
+            metric_list = client.execute_query('list',
+                {'name': 'projects/' + project, **query_params})
+            time_series_data.extend(metric_list.get('timeSeries', []))
+
+        if not time_series_data:
             self.log.info("No metrics found for {}".format(self.c7n_metric_key))
             return []
 
-        self.split_by_resource(metric_list['timeSeries'])
+        self.split_by_resource(time_series_data)
         matched = [r for r in resources if self.process_resource(r)]
 
         return matched
 
-    def get_query_filter(self, resources):
-        metric_filter = 'metric.type = "{}" AND ( '.format(self.metric)
+    def batch_resources(self, resources):
+        if not resources:
+            return []
+
+        batched_resources = []
 
         resource_filter = []
+        batch_size = len(self.filter)
         for r in resources:
             resource_name = jmespath.search(self.resource_key, r)
-            resource_filter.append('{} = "{}"'.format(self.metric_key, resource_name))
+            resource_filter_item = '{} = "{}"'.format(self.metric_key, resource_name)
+            resource_filter.append(resource_filter_item)
             resource_filter.append(' OR ')
-        resource_filter.pop()
-        resource_filter.append(' ) ')
-        metric_filter += ''.join(resource_filter)
+            batch_size += len(resource_filter_item) + 4
 
+            if batch_size >= BATCH_SIZE:
+                resource_filter.pop()
+                batched_resources.append(resource_filter)
+                resource_filter = []
+                batch_size = len(self.filter)
+
+        resource_filter.pop()
+        batched_resources.append(resource_filter)
+        return batched_resources
+
+    def get_batched_query_filter(self, resources):
+        batched_filters = []
+        metric_filter_type = 'metric.type = "{}" AND ( '.format(self.metric)
+        user_filter = ''
         if self.filter:
-            metric_filter = metric_filter + " AND " + self.filter
-        return metric_filter
+            user_filter = " AND " + self.filter
+
+        for batch in self.batch_resources(resources):
+            batched_filters.append(''.join([
+                metric_filter_type,
+                ''.join(batch),
+                ' ) ',
+                user_filter
+            ]))
+        return batched_filters
 
     def split_by_resource(self, metric_list):
         for m in metric_list:
