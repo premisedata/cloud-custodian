@@ -75,7 +75,7 @@ class TestGCPMetricsFilter(BaseTest):
         metric_filter.process([])
         batch = metric_filter.get_batched_query_filter(resources)
 
-        self.assertEquals(len(batch), 2)
+        self.assertEqual(len(batch), 2)
         self.assertLess(len(batch[0]), 11000)
         self.assertIn('resource.labels.zone = "us-east4-d"', batch[0])
         self.assertIn('metric.type = "compute.googleapis.com/instance/cpu/utilization"', batch[0])
