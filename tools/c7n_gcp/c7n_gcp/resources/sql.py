@@ -28,6 +28,7 @@ class SqlInstance(QueryResourceManager):
             "name", "state", "databaseVersion", "settings.tier", "settings.dataDiskSizeGb"]
         asset_type = "sqladmin.googleapis.com/Instance"
         scc_type = "google.cloud.sql.Instance"
+        metric_key = 'resource.labels.database_id'
         perm_service = 'cloudsql'
 
         @staticmethod
