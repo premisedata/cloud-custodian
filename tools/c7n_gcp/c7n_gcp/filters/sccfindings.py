@@ -18,8 +18,8 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
         filters:
         - type: scc-findings
           org: 11111111111111
-          key: "[].finding.category"
-          severity: HIGH
+          key: "[].finding.severity"
+          value: HIGH
           op: contains
     """
 
