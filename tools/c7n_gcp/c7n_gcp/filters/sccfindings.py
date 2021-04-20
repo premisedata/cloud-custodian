@@ -16,7 +16,7 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
       - name: bucket-contains-high-finding
         resource: gcp.bucket
         filters:
-        - type: scc-finding
+        - type: scc-findings
           org: 11111111111111
           key: "[].finding.category"
           severity: HIGH

@@ -95,7 +95,7 @@ class TestSecurityComandCenterFindingsFilter(BaseTest):
                 "resource": "gcp.bucket",
                 "filters": [
                     {'type': 'scc-findings',
-                     'org': '111111111111',
+                     'org': 111111111111,
                      'key': '[].finding.category',
                      'value': 'BUCKET_LOGGING_DISABLED',
                      'op': 'contains'}],
@@ -117,7 +117,7 @@ class TestSecurityComandCenterFindingsFilter(BaseTest):
                 "resource": "gcp.bucket",
                 "filters": [
                     {'type': 'scc-findings',
-                     'org': '111111111111'}],
+                     'org': 111111111111}],
             },
             session_factory=session_factory,
         )
