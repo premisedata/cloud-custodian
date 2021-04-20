@@ -26,6 +26,7 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
     schema = type_schema('scc-findings', rinherit=ValueFilter.schema,
     org={'type': 'integer'}, required=['org'])
     required_keys = {}
+    permissions = ("securitycenter.findings.list",)
 
     def process(self, resources, event=None):
         self.findings_by_resource = {}
