@@ -96,15 +96,14 @@ class TestSecurityComandCenterFindingsFilter(BaseTest):
                 "filters": [
                     {'type': 'scc-findings',
                      'org': 111111111111,
-                     'key': '[].finding.category',
-                     'value': 'BUCKET_LOGGING_DISABLED',
-                     'op': 'contains'}],
+                     'key': 'category',
+                     'value': 'BUCKET_LOGGING_DISABLED'}],
             },
             session_factory=session_factory,
         )
         resources = p.run()
         self.assertEqual(len(resources), 1)
-        self.assertEqual(resources[0]['c7n.findings'][0]['finding']['category'],
+        self.assertEqual(resources[0]['c7n:matched-findings'][0]['category'],
           'BUCKET_LOGGING_DISABLED')
 
     def test_findings_no_key(self):

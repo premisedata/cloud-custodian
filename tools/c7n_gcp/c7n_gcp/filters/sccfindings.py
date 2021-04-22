@@ -18,37 +18,38 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
         filters:
         - type: scc-findings
           org: 11111111111111
-          key: "[].finding.severity"
+          key: severity
           value: HIGH
-          op: contains
     """
 
     schema = type_schema('scc-findings', rinherit=ValueFilter.schema,
     org={'type': 'integer'}, required=['org'])
     required_keys = {}
     permissions = ("securitycenter.findings.list",)
+    annotation_key = 'c7n:matched-findings'
 
     def process(self, resources, event=None):
+        if not resources[0].get(self.annotation_key):
+            findings_list = self.get_findings(resources)
+            self.split_by_resource(findings_list)
+        matched = [r for r in resources if self.process_resource(r)]
+        return matched
+
+    def get_findings(self, resources):
         self.findings_by_resource = {}
-
-        session = local_session(self.manager.session_factory)
-        client = session.client("securitycenter", "v1", "organizations.sources.findings")
-
         query_params = {
             'filter': self.get_resource_filter(resources),
             'pageSize': 1000
         }
-        findings_list = client.execute_query('list',
-          {'parent': 'organizations/{}/sources/-'.format(self.data['org']), **query_params})
-
-        if not findings_list.get('listFindingsResults'):
-            findings_list = {'listFindingsResults': []}
-
-        self.split_by_resource(findings_list['listFindingsResults'])
-
-        matched = [r for r in resources if self.process_resource(r)]
-
-        return matched
+        session = local_session(self.manager.session_factory)
+        client = session.client("securitycenter", "v1", "organizations.sources.findings")
+        findings_paged_list = list(client.execute_paged_query('list',
+            {'parent': 'organizations/{}/sources/-'.format(self.data['org']), **query_params}))
+        findings_list = []
+        for findings_page in findings_paged_list:
+            if findings_page.get('listFindingsResults'):
+                findings_list.extend(findings_page['listFindingsResults'])
+        return findings_list
 
     def get_resource_filter(self, resources):
         resource_filter = []
@@ -63,18 +64,18 @@ class SecurityComandCenterFindingsFilter(ValueFilter):
         for f in finding_list:
             resource_name = f["finding"]["resourceName"].split('/')[-1]
             resource_findings = self.findings_by_resource.get(resource_name, [])
-            resource_findings.append(f)
+            resource_findings.append(f['finding'])
             self.findings_by_resource[resource_name] = resource_findings
 
     def process_resource(self, resource):
-        resource_name = resource[self.manager.resource_type.name]
-        resource_findings = self.findings_by_resource.get(resource_name, [])
-        resource.setdefault('c7n.findings', []).extend(resource_findings)
+        if not resource.get(self.annotation_key):
+            resource_name = resource[self.manager.resource_type.name]
+            resource[self.annotation_key] = self.findings_by_resource.get(resource_name, [])
 
-        if not self.data.get('key'):
-            return len(resource_findings) > 0
-
-        return self.match(resource_findings)
+        if self.data.get('key'):
+            resource[self.annotation_key] = [
+                finding for finding in resource[self.annotation_key] if self.match(finding)]
+        return len(resource[self.annotation_key]) > 0
 
     @classmethod
     def register_resources(klass, registry, resource_class):
