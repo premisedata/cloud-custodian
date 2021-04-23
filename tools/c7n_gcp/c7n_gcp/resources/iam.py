@@ -98,7 +98,8 @@ class ServiceAccountKey(ChildResourceManager):
         asset_type = "iam.googleapis.com/ServiceAccountKey"
         scc_type = "google.iam.ServiceAccountKey"
         permissions = ("iam.serviceAccounts.list",)
-
+        metric_key = 'metric.labels.key_id'
+        
         @staticmethod
         def get(client, resource_info):
             project, sa, key = re.match(

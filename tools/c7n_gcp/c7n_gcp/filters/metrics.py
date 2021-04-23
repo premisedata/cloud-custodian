@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import pytz
 
 import jmespath
+import re 
 
 from c7n.filters.core import Filter, OPERATORS, FilterValidationError
 from c7n.utils import local_session, type_schema
@@ -86,6 +87,7 @@ class GCPMetricsFilter(Filter):
         **{'name': {'type': 'string'},
           'resource-key': {'type': 'string'},
           'metric-key': {'type': 'string'},
+          'resource-key-regex': {'type': 'string'},
           'group-by-fields': {'type': 'array', 'items': {'type': 'string'}},
           'days': {'type': 'number'},
           'op': {'type': 'string', 'enum': list(OPERATORS.keys())},
@@ -109,8 +111,9 @@ class GCPMetricsFilter(Filter):
         duration = timedelta(days)
 
         self.metric = self.data['name']
-        self.resource_key = self.data.get('resource-key', self.manager.resource_type.name)
-        self.metric_key = self.data.get('metric-key', self.manager.resource_type.metric_key)
+        self.resource_key = self.data.get('resource-key') or self.manager.resource_type.name
+        self.resource_key_regex = self.data.get('resource-key-regex')
+        self.metric_key = self.data.get('metric-key') or  self.manager.resource_type.metric_key
         self.aligner = self.data.get('aligner', 'ALIGN_NONE')
         self.reducer = self.data.get('reducer', 'REDUCE_NONE')
         self.group_by_fields = self.data.get('group-by-fields', [])
@@ -163,11 +166,12 @@ class GCPMetricsFilter(Filter):
         batch_size = len(self.filter)
         for r in resources:
             resource_name = jmespath.search(self.resource_key, r)
+            if self.resource_key_regex:
+                resource_name = re.search(re.compile(self.resource_key_regex), resource_name).group(1)
             resource_filter_item = '{} = "{}"'.format(self.metric_key, resource_name)
             resource_filter.append(resource_filter_item)
             resource_filter.append(' OR ')
             batch_size += len(resource_filter_item) + 4
-
             if batch_size >= BATCH_SIZE:
                 resource_filter.pop()
                 batched_resources.append(resource_filter)
