@@ -46,7 +46,7 @@ class TestGCPMetricsFilter(BaseTest):
                     'name': 'compute.googleapis.com/instance/cpu/utilization',
                     'metric-key': 'metric.labels.instance_name',
                     'resource-key': 'name',
-                    'resource-key-regex':'([a-z-]+)',
+                    'resource-key-regex': '([a-z-]+)',
                     'aligner': 'ALIGN_MEAN',
                     'days': 14,
                     'value': .1,
@@ -60,7 +60,7 @@ class TestGCPMetricsFilter(BaseTest):
         metric_name = 'compute.googleapis.com/instance/cpu/utilization.ALIGN_MEAN.REDUCE_NONE'
         metric = resources[0]['c7n.metrics'][metric_name]
         self.assertGreater(.1, metric['points'][0]['value']['doubleValue'])
-    
+
     def test_no_metrics_found(self):
 
         session_factory = self.replay_flight_data("filter-no-metrics")
