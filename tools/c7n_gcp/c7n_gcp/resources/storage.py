@@ -20,6 +20,7 @@ class Bucket(QueryResourceManager):
             "name", "timeCreated", "location", "storageClass"]
         asset_type = "storage.googleapis.com/Bucket"
         scc_type = "google.cloud.storage.Bucket"
+        metric_key = 'resource.labels.bucket_name'
 
         @staticmethod
         def get(client, resource_info):
