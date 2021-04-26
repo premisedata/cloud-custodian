@@ -208,6 +208,9 @@ class GCPMetricsFilter(Filter):
         resource_metric = resource.setdefault('c7n.metrics', {})
 
         resource_name = jmespath.search(self.resource_key, resource)
+        if self.resource_key_regex:
+            resource_name = re.search(re.compile(self.resource_key_regex),
+                resource_name).group(1)
         metric = self.resource_metric_dict.get(resource_name)
         if not metric and not self.missing_value:
             return False
