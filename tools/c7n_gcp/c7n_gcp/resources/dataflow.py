@@ -1,9 +1,20 @@
 # Copyright The Cloud Custodian Authors.
 # SPDX-License-Identifier: Apache-2.0
 import jmespath
+from googleapiclient.errors import HttpError
 
 from c7n_gcp.provider import resources
 from c7n_gcp.query import QueryResourceManager, TypeInfo
+
+ACTIVE_JOB_STATES = [
+    'JOB_STATE_RUNNING',
+    'JOB_STATE_STOPPED',
+    'JOB_STATE_DRAINING',
+    'JOB_STATE_PENDING',
+    'JOB_STATE_CANCELLING',
+    'JOB_STATE_QUEUED',
+    'JOB_STATE_RESOURCE_CLEANING_UP'
+]
 
 
 @resources.register('dataflow-job')
@@ -31,3 +42,23 @@ class DataflowJob(QueryResourceManager):
                     'jobId': jmespath.search('protoPayload.request.job_id', event)
                 }
             )
+
+    def augment(self, resources):
+        client = self.get_client()
+        results = []
+        for r in resources:
+            if r['currentState'] in ACTIVE_JOB_STATES:
+                ref = {
+                    'jobId': r['id'],
+                    'projectId': r['projectId'],
+                    'view': 'JOB_VIEW_ALL'
+                }
+                try:
+                    results.append(
+                        client.execute_query(
+                            'get', verb_arguments=ref))
+                except HttpError:
+                    results.append(r)
+            else:
+                results.append(r)
+        return results
