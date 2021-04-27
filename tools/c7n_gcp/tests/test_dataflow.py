@@ -14,10 +14,12 @@ class DataflowJobTest(BaseTest):
             'resource': 'gcp.dataflow-job'},
             session_factory=factory)
         resource = p.run()
-        self.assertEqual(len(resource), 1)
+        self.assertEqual(len(resource), 2)
         self.assertEqual(resource[0]['name'], 'test')
         self.assertEqual(resource[0]['projectId'], project_id)
         self.assertEqual(resource[0]['location'], 'us-central1')
+        self.assertTrue(resource[0].get("environment"))
+        self.assertFalse(resource[1].get("environment"))
 
     def test_job_get(self):
         project_id = 'cloud-custodian'
