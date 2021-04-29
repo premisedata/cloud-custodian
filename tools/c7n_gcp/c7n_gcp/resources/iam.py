@@ -60,6 +60,10 @@ class ServiceAccount(QueryResourceManager):
                         resource_info['project_id'],
                         resource_info['email_id'])})
 
+        @staticmethod
+        def get_metric_resource_name(resource):
+            return resource["uniqueId"]
+
 
 @resources.register('service-account-key')
 class ServiceAccountKey(ChildResourceManager):
@@ -109,6 +113,10 @@ class ServiceAccountKey(ChildResourceManager):
                 'get', {
                     'name': 'projects/{}/serviceAccounts/{}/keys/{}'.format(
                         project, sa, key)})
+
+        @staticmethod
+        def get_metric_resource_name(resource):
+            return resource["name"].split('/')[-1]
 
 
 @ServiceAccountKey.action_registry.register('delete')
