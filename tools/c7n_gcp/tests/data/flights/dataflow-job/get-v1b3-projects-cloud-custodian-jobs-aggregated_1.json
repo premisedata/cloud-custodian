@@ -19,24 +19,6 @@
           }
         },
         "startTime": "2021-04-27T15:34:21.567761Z"
-      },
-      {
-        "id": "2021-04-27_08_34_20-8562643317148312879",
-        "projectId": "cloud-custodian",
-        "name": "failed",
-        "type": "JOB_TYPE_STREAMING",
-        "currentState": "JOB_STATE_FAILED",
-        "currentStateTime": "2021-04-27T15:34:29.003405Z",
-        "createTime": "2021-04-27T15:34:21.567761Z",
-        "location": "us-central1",
-        "jobMetadata": {
-          "sdkVersion": {
-            "version": "2.27.0",
-            "versionDisplayName": "Apache Beam SDK for Java",
-            "sdkSupportStatus": "SUPPORTED"
-          }
-        },
-        "startTime": "2021-04-27T15:34:21.567761Z"
       }
     ]
   }
