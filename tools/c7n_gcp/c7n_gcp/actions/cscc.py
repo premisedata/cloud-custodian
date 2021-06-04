@@ -11,7 +11,8 @@ from .core import MethodAction
 
 from c7n_gcp.provider import resources as gcp_resources
 
-SEVERITIES = ['LOW','MEDIUM','HIGH', 'SEVERITY_UNSPECIFIED']
+SEVERITIES = ['LOW', 'MEDIUM', 'HIGH', 'SEVERITY_UNSPECIFIED']
+
 
 class PostFinding(MethodAction):
     """Post finding for matched resources to Cloud Security Command Center.
@@ -46,7 +47,7 @@ class PostFinding(MethodAction):
             'org-domain': {'type': 'string'},
             'org-id': {'type': 'integer'},
             'category': {'type': 'string'},
-            'severity':{'type': 'string', 'enum': SEVERITIES}})
+            'severity': {'type': 'string', 'enum': SEVERITIES}})
     schema_alias = True
     method_spec = {'op': 'create', 'result': 'name', 'annotation_key': 'c7n:Finding'}
 
