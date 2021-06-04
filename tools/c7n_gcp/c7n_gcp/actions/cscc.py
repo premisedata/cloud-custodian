@@ -58,7 +58,7 @@ class PostFinding(MethodAction):
     DefaultCategory = 'Custodian'
     DefaultSeverity = 'SEVERITY_UNSPECIFIED'
     Service = 'securitycenter'
-    ServiceVersion = 'v1beta1'
+    ServiceVersion = 'v1'
 
     _source = None
 
