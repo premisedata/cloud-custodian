@@ -105,9 +105,9 @@ class GCPMetricsFilter(Filter):
         return self
 
     def process(self, resources, event=None):
+        import pdb; pdb.set_trace
         days = self.data.get('days', 14)
         duration = timedelta(days)
-
         self.metric = self.data['name']
         self.resource_key = self.data.get('resource-key', self.manager.resource_type.name)
         self.metric_key = self.data.get('metric-key', self.manager.resource_type.metric_key)
@@ -129,6 +129,7 @@ class GCPMetricsFilter(Filter):
         project = session.get_default_project()
 
         time_series_data = []
+        import pdb; pdb.set_trace
         for batched_filter in self.get_batched_query_filter(resources):
             query_params = {
                 'filter': batched_filter,
@@ -143,7 +144,7 @@ class GCPMetricsFilter(Filter):
             metric_list = client.execute_query('list',
                 {'name': 'projects/' + project, **query_params})
             time_series_data.extend(metric_list.get('timeSeries', []))
-
+        import pdb; pdb.set_trace
         if not time_series_data:
             self.log.info("No metrics found for {}".format(self.c7n_metric_key))
             return []
@@ -156,13 +157,12 @@ class GCPMetricsFilter(Filter):
     def batch_resources(self, resources):
         if not resources:
             return []
-
         batched_resources = []
 
         resource_filter = []
         batch_size = len(self.filter)
         for r in resources:
-            resource_name = jmespath.search(self.resource_key, r)
+            resource_name = jmespath.search(self.resource_key, r).split('/')[-1]
             resource_filter_item = '{} = "{}"'.format(self.metric_key, resource_name)
             resource_filter.append(resource_filter_item)
             resource_filter.append(' OR ')
@@ -173,7 +173,6 @@ class GCPMetricsFilter(Filter):
                 batched_resources.append(resource_filter)
                 resource_filter = []
                 batch_size = len(self.filter)
-
         resource_filter.pop()
         batched_resources.append(resource_filter)
         return batched_resources
@@ -196,13 +195,13 @@ class GCPMetricsFilter(Filter):
 
     def split_by_resource(self, metric_list):
         for m in metric_list:
-            resource_name = jmespath.search(self.metric_key, m)
+            resource_name = jmespath.search(self.metric_key, m).split('/')[-1]
             self.resource_metric_dict[resource_name] = m
 
     def process_resource(self, resource):
         resource_metric = resource.setdefault('c7n.metrics', {})
 
-        resource_name = jmespath.search(self.resource_key, resource)
+        resource_name = jmespath.search(self.resource_key, resource).split('/')[-1]
         metric = self.resource_metric_dict.get(resource_name)
         if not metric and not self.missing_value:
             return False

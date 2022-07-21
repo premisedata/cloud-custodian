@@ -76,6 +76,7 @@ ResourceMap = {
     "gcp.pubsub-topic": "c7n_gcp.resources.pubsub.PubSubTopic",
     "gcp.route": "c7n_gcp.resources.network.Route",
     "gcp.router": "c7n_gcp.resources.network.Router",
+    "gcp.run-service": "c7n_gcp.resources.run.RunService",
     "gcp.service": "c7n_gcp.resources.service.Service",
     "gcp.service-account": "c7n_gcp.resources.iam.ServiceAccount",
     "gcp.service-account-key": "c7n_gcp.resources.iam.ServiceAccountKey",
